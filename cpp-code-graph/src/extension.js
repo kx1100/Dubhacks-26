@@ -100,7 +100,7 @@ class GraphPanel {
         await this.refreshWorkspace();
         break;
       case 'ask':
-        await this.ask(m.question, m.focus);
+        await this.ask(m.question, m.focus, m.mode);
         break;
       case 'cancelAsk':
         if (this.aiCancel) this.aiCancel.cancel();
@@ -223,7 +223,7 @@ class GraphPanel {
 
   // ---- AI ----------------------------------------------------------------------
 
-  async ask(question, focus) {
+  async ask(question, focus, mode) {
     question = (question || '').trim();
     if (!question) return;
     this.show();
@@ -241,9 +241,13 @@ class GraphPanel {
     try {
       const result = await askQuestion(graph, question, {
         focusId: focus,
+        mode,
         readSource,
         token: cts.token,
-        onText: text => this.post({ type: 'aiPartial', text })
+        onText: text => this.post({ type: 'aiPartial', text }),
+        onStep: step => {
+          if (!cts.token.isCancellationRequested) this.post({ type: 'aiStep', step });
+        }
       });
       if (!cts.token.isCancellationRequested) this.post({ type: 'aiResult', ...result });
     } catch (err) {

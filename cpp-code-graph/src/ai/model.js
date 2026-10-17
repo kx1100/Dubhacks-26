@@ -4,6 +4,8 @@
 
 const vscode = require('vscode');
 
+const JUSTIFICATION = 'Answer questions about the C/C++ code graph.';
+
 /** The best available chat model (Claude, then GPT-4/5 class, then anything), or null. */
 async function selectModel() {
   let models = [];
@@ -19,7 +21,7 @@ async function selectModel() {
 /** Sends one user prompt and calls onText with the accumulated text as it streams. Returns the full text. */
 async function streamText(model, prompt, token, onText) {
   const messages = [vscode.LanguageModelChatMessage.User(prompt)];
-  const response = await model.sendRequest(messages, { justification: 'Answer questions about the C/C++ code graph.' }, token);
+  const response = await model.sendRequest(messages, { justification: JUSTIFICATION }, token);
   let text = '';
   for await (const chunk of response.text) {
     text += chunk;
@@ -33,4 +35,54 @@ function isModelError(err) {
   return err instanceof vscode.LanguageModelError || !!(err && err.code);
 }
 
-module.exports = { selectModel, streamText, isModelError };
+/** Whether this VS Code (1.95+) and model can do tool calling. */
+function supportsTools(model) {
+  if (typeof vscode.LanguageModelToolCallPart !== 'function' || typeof vscode.LanguageModelToolResultPart !== 'function') return false;
+  if (typeof vscode.LanguageModelChatMessage.Assistant !== 'function') return false;
+  const caps = model && model.capabilities;
+  return !(caps && (caps.supportsToolCalling === false || caps.toolCalling === false));
+}
+
+/**
+ * Wraps a chat model in the adapter the agent expects (see agent.js):
+ * send(messages, {tools, forceTool}, token) -> {text, calls}.
+ */
+function toolAdapter(model) {
+  const { LanguageModelChatMessage: Msg, LanguageModelTextPart: Text, LanguageModelToolCallPart: Call, LanguageModelToolResultPart: Result } = vscode;
+  const toVscode = m => {
+    if (m.role === 'assistant') {
+      const parts = [];
+      if (m.text) parts.push(new Text(m.text));
+      for (const c of m.calls || []) parts.push(new Call(c.id, c.name, c.input || {}));
+      return Msg.Assistant(parts);
+    }
+    if (m.results) {
+      const parts = m.results.map(r => new Result(r.id, [new Text(r.text)]));
+      if (m.text) parts.push(new Text(m.text));
+      return Msg.User(parts);
+    }
+    return Msg.User(m.text);
+  };
+  return {
+    name: model.name || model.family,
+    maxInputTokens: model.maxInputTokens,
+    async send(messages, opts, token) {
+      const options = {
+        justification: JUSTIFICATION,
+        tools: (opts.tools || []).map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))
+      };
+      if (opts.forceTool && vscode.LanguageModelChatToolMode) options.toolMode = vscode.LanguageModelChatToolMode.Required;
+      const response = await model.sendRequest(messages.map(toVscode), options, token);
+      let text = '';
+      const calls = [];
+      // Parts are recognized by shape, so this also works with test doubles.
+      for await (const part of response.stream) {
+        if (part && typeof part.callId === 'string') calls.push({ id: part.callId, name: part.name, input: part.input || {} });
+        else if (part && typeof part.value === 'string') text += part.value;
+      }
+      return { text, calls };
+    }
+  };
+}
+
+module.exports = { selectModel, streamText, isModelError, supportsTools, toolAdapter };

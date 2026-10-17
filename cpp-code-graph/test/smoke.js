@@ -104,5 +104,56 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (!res || res.highlight.length !== 2 || res.path.length !== 2 || !res.answer.includes('[[fn:main')) throw new Error('bad ai result ' + JSON.stringify(res));
   console.log('posted:', posted.map(m => m.type).join(', '));
   console.log('answer:', res.answer);
+
+  // Tool calling (VS Code 1.95+): the agent investigates, then finishes.
+  vscode.LanguageModelTextPart = class { constructor(value) { this.value = value; } };
+  vscode.LanguageModelToolCallPart = class { constructor(callId, name, input) { this.callId = callId; this.name = name; this.input = input; } };
+  vscode.LanguageModelToolResultPart = class { constructor(callId, content) { this.callId = callId; this.content = content; } };
+  vscode.LanguageModelChatMessage.Assistant = parts => ({ role: 'assistant', content: parts });
+  vscode.LanguageModelChatToolMode = { Auto: 1, Required: 2 };
+  const requests = [];
+  const toolModel = {
+    name: 'MockTools', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages, options) {
+      requests.push({ messages, options });
+      const intro = messages[0].content;
+      const mainRef = /(N\d+) function main/.exec(intro)[1];
+      const parts = [];
+      if (requests.length === 1) parts.push(new vscode.LanguageModelTextPart('Checking main.'), new vscode.LanguageModelToolCallPart('t1', 'neighbors', { node: mainRef, direction: 'out', kinds: ['calls'] }));
+      else {
+        const results = messages[messages.length - 1].content;
+        const renderRef = /calls -> (N\d+) method geo::Canvas::render/.exec(results[0].content[0].value)[1];
+        parts.push(new vscode.LanguageModelToolCallPart('t2', 'finish', { answer: `[[${mainRef}]] calls [[${renderRef}]].`, path: [mainRef, renderRef], evidence: [{ file: 'src/main.cpp', line: 15, claim: 'render call' }], confidence: 'high' }));
+      }
+      return { stream: (async function* () { yield* parts; })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [toolModel];
+  posted.length = 0;
+  await onMessage({ type: 'ask', question: 'How does rendering work?', focus: null, mode: 'path' });
+  const steps = posted.filter(m => m.type === 'aiStep');
+  const tres = posted.find(m => m.type === 'aiResult');
+  if (requests.length !== 2 || requests[0].options.tools.length < 8) throw new Error('agent did not use tools: ' + requests.length);
+  if (!/execution path/.test(requests[0].messages[0].content)) throw new Error('path mode hint missing');
+  const sent = requests[1].messages;
+  if (sent[1].role !== 'assistant' || sent[1].content[0].value !== 'Checking main.' || sent[1].content[1].callId !== 't1') throw new Error('assistant turn not replayed');
+  if (!(sent[2].content[0] instanceof vscode.LanguageModelToolResultPart) || sent[2].content[0].callId !== 't1') throw new Error('tool result not sent');
+  if (steps.length !== 2 || steps[1].step.tool !== 'neighbors' || !steps[1].step.nodeIds.length) throw new Error('bad steps ' + JSON.stringify(steps));
+  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
+  console.log('agent answer:', tres.answer);
+
+  // A model that rejects tools falls back to the single prompt.
+  const fallbackModel = {
+    name: 'NoTools', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages, options) {
+      if (options.tools) throw Object.assign(new vscode.LanguageModelError('tools not supported'), { code: 'NoTools' });
+      return { text: (async function* () { yield 'Plain answer.\nHIGHLIGHT: none\nPATH: none'; })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [fallbackModel];
+  posted.length = 0;
+  await onMessage({ type: 'ask', question: 'Anything?', focus: null });
+  const fres = posted.find(m => m.type === 'aiResult');
+  if (!fres || fres.answer !== 'Plain answer.' || fres.error) throw new Error('bad fallback result ' + JSON.stringify(fres));
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });

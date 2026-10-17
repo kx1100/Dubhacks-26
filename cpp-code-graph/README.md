@@ -32,7 +32,7 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
 - **Trace callers / callees.** Highlights everything a function reaches, directly or indirectly, or everything that leads to it.
 - **Show in Code Graph.** Right-click inside a C/C++ editor to jump to the function or class under the cursor.
 - **Git commit comparison.** Run **Code Graph: Compare Git Commits** and pick two commits, or a commit and your working tree. Added, removed and modified functions, classes and files are colored green, red and yellow. Added and removed relationships are colored the same way. **Changes only** hides everything that did not change. Modified files can be opened in VS Code's diff view.
-- **Ask AI.** Ask a question such as "What happens when the program starts?" The answer appears next to the graph. The nodes it mentions become clickable and are highlighted, and the main execution path is numbered step by step. This uses whichever language model VS Code makes available (for example GitHub Copilot) through the Language Model API, so no API key is needed. Without a model, the extension falls back to matching your question against node names.
+- **Ask AI.** Ask a question such as "What happens when the program starts?" The answer appears next to the graph. The nodes it mentions become clickable and are highlighted, and the main execution path is numbered step by step. When the model supports tool calling, it investigates step by step instead of answering from one prompt. It searches for symbols, follows calls and other relationships, and reads code. Its answer cites the source lines it relied on. Node references and the execution path are checked against the graph, and a step that isn't a known call is marked as inferred. This uses whichever language model VS Code makes available (for example GitHub Copilot) through the Language Model API, so no API key is needed. Without tool support, the question and the most relevant code are sent in a single prompt. Without a model, the extension falls back to matching your question against node names.
 - **Stays current.** The graph updates when you save, create or delete C/C++ files. Your expanded nodes, selection and view are kept.
 
 ## Getting started
@@ -90,7 +90,7 @@ The extension is plain JavaScript with no build step.
 - `src/graph/builder.js`: name resolution and graph building
 - `src/graph/diff.js`: graph comparison
 - `src/git.js`: reads source files at any revision using the git CLI
-- `src/ai/`: Language Model API integration (`model.js` model access, `context.js` prompt context, `answer.js` answer parsing, `graphTools.js` graph queries the agent uses as tools)
+- `src/ai/`: Language Model API integration (`model.js` model access, `context.js` prompt context, `answer.js` answer parsing, `graphTools.js` graph queries the agent uses as tools, `agent.js` the tool-calling investigation loop)
 - `src/extension.js`: commands, webview panel and file watching
 - `media/graph.js`, `media/graph.css`: the webview (custom SVG renderer with a nested layered layout; no external libraries)
 - `media/highlight.js`: the small C/C++ syntax highlighter used by the inline code cards
@@ -103,6 +103,6 @@ To develop and test:
 - **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view, `?code=name` (repeatable) to open code cards, `?preset=calls` (or `includes`, `inheritance`, `structure`) and `?arrows=all` (or `bundled`, `selected`) to pick a view, and `?large` to load a generated 80-file project (see below).
 - **Large project:** `node test/gen-large.js <dir> [modules]` writes a synthetic C project for trying big graphs. `node test/make-fixtures.js <dir> test` then writes `test/fixtures.js`; the browser test builds `test/fixtures-large.js` itself when it needs it.
 - **Highlighter test:** `node test/highlight.test.js`.
-- **AI graph tools test:** `node test/graphTools.test.js` checks symbol search, neighbors, call paths, reach, source reads and grep against `sample/`.
+- **AI graph tools test:** `node test/graphTools.test.js` checks symbol search, neighbors, call paths, reach, source reads and grep against `sample/`. `node test/agent.test.js` drives the investigation loop with a scripted model.
 - **Browser test:** `node test/ui.test.js` drives the harness in headless Chrome or Edge (set `CHROME` to the executable if it is not found). It covers code cards, the header ↔ source edges, the views and arrow modes, bundling, left-to-right layout, long-arrow labels and Collapse others.
 - **Package:** `node scripts/package.js` builds a `.vsix` without `vsce`.

@@ -1,14 +1,16 @@
 'use strict';
 
-// AI-assisted exploration. Sends a compact description of the graph (plus the
-// source of the most relevant functions) to a language model available through
-// VS Code's Language Model API, and asks it to answer the question while
-// referencing graph nodes as [[N12]] so the webview can highlight them.
+// AI-assisted exploration through VS Code's Language Model API. With tool
+// calling, the investigation agent (agent.js) looks things up in the graph step
+// by step. Otherwise a compact description of the graph (plus the source of the
+// most relevant functions) is sent in one prompt, and the model references graph
+// nodes as [[N12]] so the webview can highlight them.
 // Without a model, falls back to keyword matching over node names.
 
 const { relevance, buildContext, readSnippet } = require('./context');
 const { stripTrailer, mapRefs, parseAnswer, keywordFallback } = require('./answer');
-const { selectModel, streamText, isModelError } = require('./model');
+const { selectModel, streamText, isModelError, supportsTools, toolAdapter } = require('./model');
+const { investigate } = require('./agent');
 
 const SYSTEM = `You help a developer understand a C/C++ codebase that is shown to them as an interactive graph.
 You get a list of graph nodes. Each line is: <id> <kind> <qualified name> @<file:line> | <relation>:<target ids>.
@@ -20,14 +22,28 @@ HIGHLIGHT: comma-separated ids of every node relevant to the answer
 PATH: ids of the main execution path in call order joined with " -> " (or "none" if not applicable)`;
 
 /**
+ * Answers a question about the graph. Uses the investigation agent when the
+ * model supports tool calling, otherwise a single prompt with packed context.
  * @param {object} graph
  * @param {string} question
- * @param {{focusId?:string, readSource:(file:string)=>Promise<string|null>, onText:(t:string)=>void, token:import('vscode').CancellationToken}} opts
+ * @param {{focusId?:string, mode?:'ask'|'investigate'|'path', readSource:(file:string)=>Promise<string|null>,
+ *          onText:(t:string)=>void, onStep?:(step:object)=>void, token:import('vscode').CancellationToken}} opts
  */
 async function askQuestion(graph, question, opts) {
   const preferred = await selectModel();
   if (!preferred) return keywordFallback(graph, question, 'No language model is available in VS Code (for example GitHub Copilot Chat), so here are the nodes whose names match your question.');
+  if (supportsTools(preferred)) {
+    try {
+      return await investigate(graph, question, { llm: toolAdapter(preferred), mode: opts.mode, focusId: opts.focusId, readSource: opts.readSource, onStep: opts.onStep, token: opts.token });
+    } catch (err) {
+      // Some models reject tool calls; answer with the single-prompt method instead.
+      if (!isModelError(err) || (opts.token && opts.token.isCancellationRequested)) throw err;
+    }
+  }
+  return askSingleShot(graph, question, preferred, opts);
+}
 
+async function askSingleShot(graph, question, preferred, opts) {
   const maxTokens = preferred.maxInputTokens || 32000;
   const budget = Math.min(maxTokens * 3, 350000);
   const ctx = buildContext(graph, question, opts.focusId, Math.floor(budget * 0.55));
