@@ -12,6 +12,9 @@ const { askQuestion } = require('./ai');
 const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
 const DEFAULT_SNIPPET_LINES = 30; // used when a node has no known end line
+const HISTORY_KEY = 'codeGraph.aiHistory';
+const HISTORY_MAX = 30; // answers kept per workspace
+const HISTORY_STEP_NODES = 40; // node ids kept per investigation step
 
 /** The single Code Graph webview panel. */
 class GraphPanel {
@@ -78,6 +81,7 @@ class GraphPanel {
         if (this.compare) this.post({ type: 'graph', mode: 'diff', graph: this.compare.graph, title: this.compare.title });
         else if (this.index.graph) this.post({ type: 'graph', mode: 'workspace', graph: this.index.graph, title: this.index.graph.title });
         else await this.refreshWorkspace();
+        this.postHistory();
         break;
       case 'open':
         await this.openSource(m);
@@ -104,6 +108,12 @@ class GraphPanel {
         break;
       case 'cancelAsk':
         if (this.aiCancel) this.aiCancel.cancel();
+        break;
+      case 'aiHistoryDelete':
+        await this.saveHistory(this.history().filter(e => e.id !== m.id));
+        break;
+      case 'aiHistoryClear':
+        await this.saveHistory([]);
         break;
     }
   }
@@ -238,6 +248,7 @@ class GraphPanel {
       const doc = await vscode.workspace.openTextDocument(uri);
       return doc.getText();
     };
+    const steps = [];
     try {
       const result = await askQuestion(graph, question, {
         focusId: focus,
@@ -246,11 +257,15 @@ class GraphPanel {
         token: cts.token,
         onText: text => this.post({ type: 'aiPartial', text }),
         onStep: step => {
+          steps.push(step);
           if (!cts.token.isCancellationRequested) this.post({ type: 'aiStep', step });
         }
       });
-      if (!cts.token.isCancellationRequested) this.post({ type: 'aiResult', ...result });
-      else if (this.aiCancel === cts) this.post(cancelledResult());
+      if (!cts.token.isCancellationRequested) {
+        const entry = this.historyEntry(question, mode, result, steps);
+        this.post({ type: 'aiResult', ...result, entryId: entry.id, time: entry.time });
+        await this.saveHistory([entry, ...this.history()]);
+      } else if (this.aiCancel === cts) this.post(cancelledResult());
     } catch (err) {
       // A question replaced by a newer one reports nothing, so it can't overwrite the newer answer.
       if (cts.token.isCancellationRequested) {
@@ -260,6 +275,43 @@ class GraphPanel {
       if (this.aiCancel === cts) this.aiCancel = null;
       cts.dispose();
     }
+  }
+
+  // ---- AI history (per workspace) -------------------------------------------------
+
+  history() {
+    const state = this.context.workspaceState;
+    return (state && state.get(HISTORY_KEY)) || [];
+  }
+
+  async saveHistory(entries) {
+    const state = this.context.workspaceState;
+    entries = entries.slice(0, HISTORY_MAX);
+    if (state) await state.update(HISTORY_KEY, entries);
+    this.postHistory(entries);
+  }
+
+  postHistory(entries) {
+    this.post({ type: 'aiHistory', entries: entries || this.history() });
+  }
+
+  historyEntry(question, mode, result, steps) {
+    return {
+      id: Date.now().toString(36) + crypto.randomBytes(3).toString('hex'),
+      time: Date.now(),
+      question,
+      mode: mode || 'ask',
+      answer: result.answer,
+      highlight: result.highlight || [],
+      path: result.path || [],
+      hops: result.hops,
+      evidence: result.evidence,
+      confidence: result.confidence,
+      model: result.model,
+      // Enough of each step to show the timeline and re-highlight its nodes.
+      steps: steps.map(s => ({ tool: s.tool, summary: s.summary, note: s.note, nodeIds: (s.nodeIds || []).slice(0, HISTORY_STEP_NODES) })),
+      compare: this.compare ? this.compare.title : undefined
+    };
   }
 
   // ---- HTML ----------------------------------------------------------------------

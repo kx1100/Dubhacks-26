@@ -1140,3 +1140,92 @@ body.vscode-light {
   left: 11px;
   background: var(--yellow);
 }
+
+/* AI history */
+
+.history {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+ul.hist {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+}
+.histi {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-left: 2px solid transparent;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.histi:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+.histi.active {
+  border-left-color: var(--focus);
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.15));
+}
+.histi.disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.histi .hg {
+  color: var(--purple);
+  min-width: 14px;
+  text-align: center;
+}
+.histi .hq {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.histi .ht {
+  font-size: 11px;
+  white-space: nowrap;
+}
+.histi .hx {
+  visibility: hidden;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  padding: 0 3px;
+  min-width: 0;
+}
+.histi:hover .hx {
+  visibility: visible;
+}
+.histi .hx:hover {
+  color: var(--fg);
+}
+.linkbtn {
+  background: transparent;
+  border: none;
+  color: var(--link);
+  padding: 2px 0;
+  font-size: 11px;
+  cursor: pointer;
+}
+.linkbtn:hover {
+  text-decoration: underline;
+  background: transparent;
+}
+.answer .q .when {
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.answer .a .chip,
+.answer .evidence .chip {
+  white-space: nowrap;
+  word-break: normal;
+}
+.pill {
+  white-space: nowrap;
+}

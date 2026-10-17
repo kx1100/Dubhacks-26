@@ -78,7 +78,8 @@ Module._resolveFilename = function (req, ...rest) { return req === 'vscode' ? 'v
 require.cache.vscode = { id: 'vscode', filename: 'vscode', loaded: true, exports: vscode };
 
 const ext = require('../src/extension');
-const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname, '..')) };
+const workspaceStore = new Map();
+const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname, '..')), workspaceState: { get: k => workspaceStore.get(k), update: async (k, v) => workspaceStore.set(k, v) } };
 (async () => {
   ext.activate(context);
   const expected = ['codeGraph.open', 'codeGraph.refresh', 'codeGraph.revealInGraph', 'codeGraph.compareCommits', 'codeGraph.ask'];
@@ -187,5 +188,22 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   await onMessage({ type: 'ask', question: 'Anything?', focus: null });
   const ores = posted.find(m => m.type === 'aiResult');
   if (!ores || ores.error || !/request failed \(Auto mode needs a prompt/.test(ores.answer)) throw new Error('router error not handled ' + JSON.stringify(ores));
+
+  // History: every answered question is saved for the workspace, newest first, with its steps.
+  // Stop is not saved; the router failure above is (it still produced an answer).
+  const saved = workspaceStore.get('codeGraph.aiHistory');
+  const qs = saved.map(e => e.question);
+  if (qs.join('|') !== 'Anything?|Anything?|Anything?|How does rendering work?|How does rendering work?') throw new Error('bad history ' + JSON.stringify(qs));
+  const agentEntry = saved[3];
+  if (agentEntry.mode !== 'path' || agentEntry.steps.length !== 2 || agentEntry.steps[1].tool !== 'neighbors' || agentEntry.path.length !== 2 || agentEntry.evidence.length !== 1) throw new Error('bad agent entry ' + JSON.stringify(agentEntry));
+  if (posted.find(m => m.type === 'aiResult').entryId !== saved[0].id) throw new Error('result does not name its history entry');
+  posted.length = 0;
+  await onMessage({ type: 'ready' });
+  const histMsg = posted.find(m => m.type === 'aiHistory');
+  if (!histMsg || histMsg.entries.length !== 5) throw new Error('history not sent on ready');
+  await onMessage({ type: 'aiHistoryDelete', id: saved[0].id });
+  if (workspaceStore.get('codeGraph.aiHistory').length !== 4) throw new Error('delete failed');
+  await onMessage({ type: 'aiHistoryClear' });
+  if (workspaceStore.get('codeGraph.aiHistory').length !== 0 || posted.filter(m => m.type === 'aiHistory').pop().entries.length !== 0) throw new Error('clear failed');
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });

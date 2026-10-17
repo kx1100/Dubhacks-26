@@ -122,6 +122,8 @@
     ai: { busy: false, question: '', answer: '', model: null, steps: [] },
     aiMode: AI_MODES[saved.aiMode] ? saved.aiMode : 'ask',
     visited: null, // Set of node ids the AI investigation is looking at (current or hovered step)
+    history: [], // saved AI answers for this workspace, newest first (kept by the extension)
+    historyOpen: true,
     layout: null,
     savedMode: saved.mode || null
   };
@@ -200,6 +202,7 @@
           <div id="suggestions" class="suggestions"></div>
         </div>
         <div id="answer" class="answer"></div>
+        <div id="history" class="history"></div>
       </div>
     </aside>
   </div>
@@ -2136,19 +2139,30 @@
     const confTitle = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
     const conf = !a.busy && a.confidence ? `<span class="pill sm conf conf-${a.confidence}" title="${esc(confTitle[a.confidence] || '')}">${esc(a.confidence)} confidence</span>` : '';
     const modeLabel = a.mode && a.mode !== 'ask' && AI_MODES[a.mode] ? `<span class="pill sm">${esc(AI_MODES[a.mode].label)}</span> ` : '';
+    const when = a.fromHistory && a.time ? ` <span class="muted when">· ${esc(ago(a.time))}</span>` : '';
+    const again = a.fromHistory ? '<button id="aiAgain" title="Ask this question again with the current code">Ask again</button>' : '';
     const hasSteps = a.steps && a.steps.length;
     const showBtn = a.highlight && a.highlight.length ? '<button id="aiShow" class="hltoggle"></button>' : '<span></span>';
-    el.innerHTML = `<div class="q">${modeLabel}${esc(a.question)}</div>
+    el.innerHTML = `<div class="q">${modeLabel}${esc(a.question)}${when}</div>
       ${hasSteps ? renderSteps(a) : ''}
       <div class="a">${a.answer ? mdLite(a.answer) : a.busy ? `<span class="muted">${hasSteps ? 'Investigating…' : 'Thinking…'}</span>` : ''}</div>
       ${!a.busy ? renderEvidence(a) : ''}
       ${a.busy ? '<button id="cancelAsk">Stop</button>' : ''}
-      ${!a.busy && ((a.highlight && a.highlight.length) || conf) ? `<div class="askrow">${showBtn}<span class="meta">${conf}${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</span></div>` : ''}`;
+      ${!a.busy && ((a.highlight && a.highlight.length) || conf) ? `<div class="askrow">${showBtn}<span class="meta">${conf}${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</span></div>` : ''}
+      ${again ? `<div class="askrow">${again}</div>` : ''}`;
+    if ($('aiAgain'))
+      $('aiAgain').onclick = () => {
+        S.aiMode = AI_MODES[a.mode] ? a.mode : 'ask';
+        persist();
+        renderModes();
+        ask(a.question, S.aiMode);
+      };
     if ($('cancelAsk')) $('cancelAsk').onclick = () => vscode.postMessage({ type: 'cancelAsk' });
     if ($('aiShow')) {
       $('aiShow').onclick = () => (aiHighlightOn() ? setHighlight(null) : applyAiHighlight(true));
       syncAiToggle();
     }
+    renderHistory();
     const steps = $('aiSteps');
     if (steps) {
       steps.ontoggle = () => (a.stepsOpen = steps.open);
@@ -2167,6 +2181,62 @@
     bindLinks(el);
   }
 
+  function ago(t) {
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  }
+
+  function renderHistory() {
+    const el = $('history');
+    const list = S.history || [];
+    if (!list.length) {
+      el.innerHTML = '';
+      return;
+    }
+    const busy = S.ai.busy;
+    const rows = list
+      .map(e => {
+        const cls = ['histi'];
+        if (e.id === S.ai.entryId) cls.push('active');
+        if (busy) cls.push('disabled');
+        const glyph = e.mode === 'path' ? '⤳' : '?';
+        return `<li class="${cls.join(' ')}" data-hist="${esc(e.id)}" title="${esc(busy ? 'Wait for the current answer' : e.question)}"><span class="hg">${glyph}</span><span class="hq">${esc(e.question)}</span>${e.compare ? '<span class="pill sm" title="Asked while comparing commits">diff</span>' : ''}<span class="muted ht">${esc(ago(e.time))}</span><button class="hx" data-hist-del="${esc(e.id)}" title="Remove from history">✕</button></li>`;
+      })
+      .join('');
+    el.innerHTML = `<details id="historyBox"${S.historyOpen ? ' open' : ''}><summary>History <span class="muted">${list.length}</span></summary><ul class="hist">${rows}</ul><button id="historyClear" class="linkbtn" title="Delete every saved question in this workspace">Clear history</button></details>`;
+    $('historyBox').ontoggle = () => (S.historyOpen = $('historyBox').open);
+    el.querySelectorAll('[data-hist]').forEach(li => {
+      li.onclick = ev => {
+        if (ev.target.closest('[data-hist-del]') || S.ai.busy) return;
+        const e = S.history.find(x => x.id === li.dataset.hist);
+        if (e) openHistory(e);
+      };
+    });
+    el.querySelectorAll('[data-hist-del]').forEach(b => {
+      b.onclick = ev => {
+        ev.stopPropagation();
+        vscode.postMessage({ type: 'aiHistoryDelete', id: b.dataset.histDel });
+      };
+    });
+    $('historyClear').onclick = () => vscode.postMessage({ type: 'aiHistoryClear' });
+  }
+
+  /** Shows a saved answer again, with its steps, evidence and highlight. */
+  function openHistory(e) {
+    S.ai = {
+      busy: false, question: e.question, mode: e.mode, steps: (e.steps || []).map((s, i) => ({ ...s, i })),
+      answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, evidence: e.evidence, confidence: e.confidence,
+      model: e.model, entryId: e.id, time: e.time, fromHistory: true
+    };
+    S.visited = null;
+    renderAnswer();
+    if (S.ai.highlight.length) applyAiHighlight(false);
+    else setHighlight(null);
+  }
+
   /** Whether the graph currently shows the highlight of the latest AI answer. */
   function aiHighlightOn() {
     return !!(S.highlight && S.highlight.source === 'ai' && S.highlight.answer === S.ai);
@@ -2177,7 +2247,7 @@
     const b = $('aiShow');
     if (!b) return;
     const on = aiHighlightOn();
-    const n = (S.ai.highlight || []).length;
+    const n = (S.ai.highlight || []).filter(id => S.nodes.has(id)).length;
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
     b.title = on ? 'Remove the highlight from the graph' : 'Highlight the nodes from this answer in the graph';
@@ -2558,6 +2628,10 @@
         S.ai.answer = m.text;
         renderAnswer();
         break;
+      case 'aiHistory':
+        S.history = m.entries || [];
+        renderHistory();
+        break;
       case 'aiStep':
         S.ai.steps.push(m.step);
         renderAnswer();
@@ -2566,7 +2640,8 @@
       case 'aiResult':
         S.ai = {
           busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], stepsOpen: S.ai.stepsOpen,
-          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, evidence: m.evidence, confidence: m.confidence, model: m.model
+          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, evidence: m.evidence, confidence: m.confidence, model: m.model,
+          entryId: m.entryId, time: m.time
         };
         S.visited = null;
         if (!m.error && !m.cancelled) $('question').value = '';

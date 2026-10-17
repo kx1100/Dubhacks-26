@@ -29,6 +29,9 @@
       }
       // ?ai answers questions with a canned investigation, like the agent in the extension host.
       if (m.type === 'ask' && new URLSearchParams(location.search).has('ai')) replayInvestigation(m);
+      // History, kept like the extension does (newest first).
+      if (m.type === 'aiHistoryDelete') postHistory(window.__history.filter(e => e.id !== m.id));
+      if (m.type === 'aiHistoryClear') postHistory([]);
       if (m.type === 'ready') {
         const diff = location.search.includes('diff');
         const f = window.__FIXTURES;
@@ -40,6 +43,12 @@
     getState() { return null; },
     setState() {}
   });
+
+  window.__history = [];
+  function postHistory(entries) {
+    window.__history = entries;
+    setTimeout(() => window.postMessage({ type: 'aiHistory', entries }, '*'), 5);
+  }
 
   function replayInvestigation(m) {
     const g = window.__FIXTURES.graph;
@@ -58,9 +67,10 @@
     const STEP_MS = 150;
     post({ type: 'aiStart', question: m.question }, 10);
     steps.forEach((s, i) => post({ type: 'aiStep', step: { ...s, i } }, STEP_MS * (i + 1)));
-    post({
-      type: 'aiResult',
-      answer: `Drawing starts in [[${main}]], which calls [[${render}]]. Each shape draws itself through [[${draw}]], which plots pixels with [[${plot}]].`,
+    const entryId = 'h' + (window.__history.length + 1) + '-' + Math.random().toString(36).slice(2, 6);
+    const time = Date.now();
+    const result = {
+      answer: `About “${m.question}”: drawing starts in [[${main}]], which calls [[${render}]]. Each shape draws itself through [[${draw}]], which plots pixels with [[${plot}]].`,
       highlight: [main, render, draw, plot],
       path: [main, render, draw, plot],
       hops: [{ s: main, t: render, inferred: false }, { s: render, t: draw, inferred: false, uncertain: true }, { s: draw, t: plot, inferred: false }],
@@ -69,8 +79,11 @@
         { nodeId: main, file: 'src/main.cpp', line: 15, claim: 'main hands the shapes to render' }
       ],
       confidence: 'high',
-      steps: steps.length,
       model: 'Harness'
+    };
+    setTimeout(() => {
+      window.postMessage({ type: 'aiResult', ...result, steps: steps.length, entryId, time }, '*');
+      postHistory([{ id: entryId, time, question: m.question, mode: m.mode || 'ask', ...result, steps }, ...window.__history]);
     }, STEP_MS * (steps.length + 2));
   }
 </script>

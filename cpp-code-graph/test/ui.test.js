@@ -240,6 +240,45 @@ async function main() {
     await evaluate(`cg.reveal(nodeByName('log_init').id, { center: false }); window.__sent.length = 0; document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="explain"]').click(); true`);
     assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))")).mode, 'ask');
 
+    // 14. History: answers are kept, newest first; an old one comes back with its steps and highlight.
+    assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'), 'second answer saved');
+    const hist = () => evaluate(`JSON.stringify([...document.querySelectorAll('#history .histi')].map(li => ({ q: li.querySelector('.hq').textContent, g: li.querySelector('.hg').textContent, active: li.classList.contains('active'), disabled: li.classList.contains('disabled') })))`).then(JSON.parse);
+    let rows = await hist();
+    assert.strictEqual(rows.length, 2);
+    assert.match(rows[0].q, /^Explain function log_init/);
+    assert.deepStrictEqual([rows[0].g, rows[0].active, rows[1].q, rows[1].g, rows[1].active], ['?', true, 'How are shapes drawn?', '⤳', false]);
+    await evaluate("cg.S.highlight = null; document.querySelectorAll('#history .histi')[1].click(); true");
+    const restored = JSON.parse(await evaluate(`JSON.stringify({
+      q: cg.S.ai.question, from: cg.S.ai.fromHistory, mode: document.querySelector('#answer .q .pill').textContent,
+      when: (document.querySelector('#answer .q .when') || {}).textContent,
+      steps: document.querySelectorAll('#aiSteps .stepi').length, text: document.querySelector('#answer .a').textContent,
+      toggle: document.getElementById('aiShow').getAttribute('aria-pressed'), path: cg.S.highlight && cg.S.highlight.path.length,
+      evidence: document.querySelectorAll('#answer .evidence a.site').length, again: !!document.getElementById('aiAgain')
+    })`));
+    assert.deepStrictEqual(
+      [restored.q, restored.from, restored.mode, restored.steps, restored.toggle, restored.path, restored.evidence, restored.again],
+      ['How are shapes drawn?', true, 'Trace path', 3, 'true', 4, 2, true]
+    );
+    assert.match(restored.text, /About “How are shapes drawn\?”/);
+    assert.match(restored.when, /just now/);
+    rows = await hist();
+    assert.deepStrictEqual(rows.map(r => r.active), [false, true]);
+    // Ask again re-asks in the saved mode; history rows are disabled until the answer arrives.
+    await evaluate("window.__sent.length = 0; document.getElementById('aiAgain').click(); true");
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))")), ['question', 'mode']), { question: 'How are shapes drawn?', mode: 'path' });
+    assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
+    rows = await hist();
+    assert(rows.every(r => r.disabled), 'history is disabled while busy');
+    await evaluate("document.querySelectorAll('#history .histi')[0].click(); true");
+    assert.strictEqual(await evaluate('cg.S.ai.busy'), true, 'clicking history while busy does nothing');
+    assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 3, 3000)'), 'third answer saved');
+    // Delete one, then clear all.
+    await evaluate("document.querySelectorAll('#history .histi .hx')[2].click(); true");
+    assert(await evaluate('waitFor(() => cg.S.history.length === 2)'), 'entry deleted');
+    assert.strictEqual((await hist()).length, 2);
+    await evaluate("document.getElementById('historyClear').click(); true");
+    assert(await evaluate("waitFor(() => cg.S.history.length === 0 && document.getElementById('history').innerHTML === '')"), 'history cleared');
+
     console.log('ui: ok');
     ws.close();
   } finally {
