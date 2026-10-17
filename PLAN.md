@@ -91,10 +91,21 @@ test-fixtures/c-demo/ small C project used for dev and the live demo
 ## Stretch Goals (in priority order, only if time allows)
 
 ### Phase 5: AI question → highlighted path
-- An input box in the webview. Send a compact graph summary and the question to Claude.
-- Claude returns relevant node IDs, which get highlighted and focused.
-- API key is kept in VS Code SecretStorage.
+- An input box in the webview. Send a compact graph summary and the question to the model.
+- The model returns relevant node IDs, which get highlighted and focused.
+- **Done:** single-shot version in `cpp-code-graph/src/ai/`. It uses VS Code's Language Model API (no API key) and falls back to keyword matching.
 - **Verify:** "What happens when a list is freed?" lights up the correct nodes.
+
+Phase 5 continues as one engine, a bounded tool-calling agent over deterministic graph queries, with each feature as a mode on top of it. One commit each:
+- **5a** Split `ai.js` into `src/ai/` (model, context, answer). No behavior change.
+- **5b** Graph query toolkit (`graphTools.js`): symbol search, neighbors, call paths, transitive reach and source reads, with unit tests.
+- **5c** Agent loop: `vscode.lm` tool calling, step and token bounds, a `finish` tool with cited evidence, and validation of ids and path edges against the graph.
+- **5d** Visible investigation: a timeline of agent steps in the AI tab, nodes highlighted per step, an evidence list and mode chips.
+- **5e** Execution-path reconstruction: a path schema with branches, conditions, inferred hops and alternatives (success, failure, retry), plus "Trace from here".
+- **5f** AI node descriptions in the details panel, cached by node content hash.
+- **5g** Change-impact simulator (static): transitive callers, overrides, type users and includers, with a risk score and heatmap. Labelled as a prediction.
+- **5h** Change impact with the LLM: classification of each affected site, and a check of the prediction against the actual git diff.
+- **5i** Semantic layer: AI-inferred edges and concept tags, each with evidence, confidence and provenance, shown as an optional edge kind.
 
 ### Phase 6: Commit diff view
 - Pick two commits, build both graphs from `git show`, and color the delta: green = added, red = removed, yellow = changed.

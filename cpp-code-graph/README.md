@@ -90,7 +90,7 @@ The extension is plain JavaScript with no build step.
 - `src/graph/builder.js`: name resolution and graph building
 - `src/graph/diff.js`: graph comparison
 - `src/git.js`: reads source files at any revision using the git CLI
-- `src/ai.js`: Language Model API integration
+- `src/ai/`: Language Model API integration (`model.js` model access, `context.js` prompt context, `answer.js` answer parsing)
 - `src/extension.js`: commands, webview panel and file watching
 - `media/graph.js`, `media/graph.css`: the webview (custom SVG renderer with a nested layered layout; no external libraries)
 - `media/highlight.js`: the small C/C++ syntax highlighter used by the inline code cards
