@@ -4,81 +4,98 @@
 // #includes, function definitions + prototypes, calls, struct/union/enum/typedef
 // definitions, and type references.
 //
-// All line/column numbers are 0-based (same as tree-sitter and vscode.Position).
+// Kinds use the NodeKind names from types.ts, so graph.ts can turn a symbol into
+// a node ID (`<kind>:<file>:<name>`) without translating. Unions are reported
+// as 'struct', as in types.ts
+//
+// All line numbers are 1-based, the same as GraphNode.line.
 
 import type * as vscode from 'vscode';
-import { Parser, Language, Node } from 'web-tree-sitter';
+import { Parser, Language as Grammar, Node } from 'web-tree-sitter';
+import type { Language, NodeKind } from './types';
 
 // ---------------------------------------------------------------------------
 // Output types (parser -> graph.ts). Not part of the webview contract in types.ts.
 // ---------------------------------------------------------------------------
 
-// stores info about a span of text in the source code 
+/** 1-based, inclusive line range. */
 export interface Span {
     line: number;
-    column: number;
     endLine: number;
 }
 
-// stores info about #include's
 export interface IncludeInfo extends Span {
-    // path with no quotes/brackets: `#include "list.h"` to `list.h`
+    /** Path as written, without quotes/brackets: `#include "list.h"` -> `list.h` */
     path: string;
     /** true for `<stdio.h>`; graph.ts skips these */
     system: boolean;
 }
 
+export type FunctionKind = Extract<NodeKind, 'function' | 'prototype'>;
+
 export interface FunctionInfo extends Span {
+    /** 'function' = definition with a body, 'prototype' = declaration without one */
+    kind: FunctionKind;
     name: string;
     /** e.g. `static Node *list_new(int value)` (whitespace collapsed, no body) */
     signature: string;
-    /** true = has a body, false = prototype */
-    isDefinition: boolean;
     isStatic: boolean;
 }
 
 export interface CallInfo extends Span {
+    /** Name of the function definition the call is in */
     caller: string;
     callee: string;
 }
 
-export type TypeKind = 'struct' | 'union' | 'enum' | 'typedef';
+/** Type kinds as they appear in the graph: unions are 'struct'. */
+export type TypeNodeKind = Extract<NodeKind, 'struct' | 'enum' | 'typedef'>;
 
 export interface TypeDefInfo extends Span {
+    kind: TypeNodeKind;
     name: string;
-    kind: TypeKind;
-    /** typedefs only: what the name aliases, e.g. `struct Node`, `struct (anonymous)`, `int` */
-    aliasOf?: string;
+    /**
+     * typedefs only: the struct/enum the name stands for when it has a tag,
+     * e.g. `typedef struct Node Node;` -> { kind: 'struct', name: 'Node' }.
+     * (`typedef struct { ... } List;` has no tag, so it is reported as struct `List` instead.)
+     */
+    aliasOf?: { kind: Extract<TypeNodeKind, 'struct' | 'enum'>; name: string };
+    /** typedefs only: the aliased type as written, e.g. `struct Node`, `int`, `unsigned long` */
+    aliasText?: string;
 }
 
-export type ScopeKind = 'file' | 'function' | 'type';
-
-export interface Scope {
-    kind: ScopeKind;
-    name: string;
-}
+/**
+ * Where something appears. For symbols, `kind` + `name` identify the node in the
+ * same file: a function's signature or body, a prototype, a struct/enum's fields,
+ * or a typedef. 'file' is file level (global variables).
+ */
+export type Scope =
+    | { kind: 'file' }
+    | { kind: Extract<NodeKind, 'function' | 'prototype' | 'struct' | 'enum' | 'typedef'>; name: string };
 
 export interface TypeRefInfo extends Span {
-    /** Where the reference appears: a function (signature or body), a type's fields, or file level (globals). */
     from: Scope;
     name: string;
     /**
-     * `struct`/`union`/`enum` when written with the keyword (`struct Node`).
-     * `typedef` when written as a bare type name (`Node`, `size_t`); graph.ts
-     * drops names it can't resolve to a workspace type.
+     * true when written with a keyword (`struct Node`, `enum Color`): look the
+     * name up among struct/union/enum tags. false for a bare name (`Node`,
+     * `size_t`): look it up among typedefs. graph.ts drops names it can't
+     * resolve to a workspace type.
      */
-    kind: TypeKind;
+    tagged: boolean;
 }
 
 export interface ParsedFile {
     filePath: string;
+    /** Always 'c' for now; tree-sitter-cpp comes in Phase 7. */
+    language: Language;
     /** tree-sitter hit syntax it couldn't parse (often macros); results may be partial */
     hasErrors: boolean;
     includes: IncludeInfo[];
     functions: FunctionInfo[];
     calls: CallInfo[];
     types: TypeDefInfo[];
-    /** De-duplicated per (from, kind, name); the span is the first occurrence. */
+    /** De-duplicated per (from, tagged, name); the span is the first occurrence. */
     typeRefs: TypeRefInfo[];
 }
 
@@ -102,10 +119,10 @@ export function getCParser(context: vscode.ExtensionContext): Promise<Parser> {
                 locateFile: (file: string) => context.asAbsolutePath(`parsers/${file}`),
             });
             const parser = new Parser();
-            const language = await Language.load(
+            const grammar = await Grammar.load(
                 context.asAbsolutePath('parsers/tree-sitter-c.wasm'),
             );
-            parser.setLanguage(language);
+            parser.setLanguage(grammar);
             return parser;
         })();
         // If loading fails, allow a later call to retry instead of caching the rejection.
@@ -148,6 +165,7 @@ const TAGGED_TYPES = new Set(['struct_specifier', 'union_specifier', 'enum_speci
 function extract(root: Node, filePath: string): ParsedFile {
     const out: ParsedFile = {
         filePath,
+        language: 'c',
         hasErrors: root.hasError,
         includes: [],
         functions: [],
@@ -157,13 +175,13 @@ function extract(root: Node, filePath: string): ParsedFile {
     };
 
     const seenRefs = new Set<string>();
-    const addRef = (from: Scope, name: string, kind: TypeKind, node: Node) => {
-        const key = `${from.kind}:${from.name}|${kind}:${name}`;
+    const addRef = (from: Scope, name: string, tagged: boolean, node: Node) => {
+        const key = `${scopeKey(from)}|${tagged ? 'tag' : 'name'}:${name}`;
         if (seenRefs.has(key)) {
             return;
         }
         seenRefs.add(key);
-        out.typeRefs.push({ from, name, kind, ...span(node) });
+        out.typeRefs.push({ from, name, tagged, ...span(node) });
     };
 
     const visitChildren = (node: Node, scope: Scope) => {
@@ -193,9 +211,9 @@ function extract(root: Node, filePath: string): ParsedFile {
                     break; // e.g. K&R or macro-mangled; just walk it
                 }
                 out.functions.push({
+                    kind: 'function',
                     name,
                     signature: signatureOf(node, fd),
-                    isDefinition: true,
                     isStatic: isStatic(node),
                     ...span(node),
                 });
@@ -216,17 +234,17 @@ function extract(root: Node, filePath: string): ParsedFile {
                     if (fd && name) {
                         protoName ??= name;
                         out.functions.push({
+                            kind: 'prototype',
                             name,
                             signature: signatureOf(node, fd),
-                            isDefinition: false,
                             isStatic: isStatic(node),
                             ...span(node),
                         });
                     }
                 }
-                // Types in a prototype's signature are used by that function;
+                // Types in a prototype's signature are used by that prototype;
                 // types in a global variable declaration are used at file level.
-                visitChildren(node, protoName ? { kind: 'function', name: protoName } : scope);
+                visitChildren(node, protoName ? { kind: 'prototype', name: protoName } : scope);
                 return;
             }
 
@@ -247,40 +265,55 @@ function extract(root: Node, filePath: string): ParsedFile {
                 const body = node.childForFieldName('body');
                 if (body) {
                     if (nameNode) {
-                        out.types.push({ name: nameNode.text, kind, ...span(node) });
+                        out.types.push({ kind, name: nameNode.text, ...span(node) });
                         // Field types are used by this struct.
-                        visitChildren(body, { kind: 'type', name: nameNode.text });
+                        visitChildren(body, { kind, name: nameNode.text });
                     } else {
                         // Anonymous body: fields belong to whatever encloses it (e.g. a typedef).
                         visitChildren(body, scope);
                     }
                 } else if (nameNode) {
-                    addRef(scope, nameNode.text, kind, nameNode);
+                    addRef(scope, nameNode.text, true, nameNode);
                 }
                 return;
             }
 
             case 'type_definition': {
                 const typeNode = node.childForFieldName('type');
-                const declarators = fieldNodes(node, 'declarator');
-                const names = declarators
+                const names = fieldNodes(node, 'declarator')
                     .map(declaratorName)
                     .filter((n): n is string => n !== null);
-                for (const name of names) {
-                    out.types.push({
-                        name,
-                        kind: 'typedef',
-                        aliasOf: typeNode ? aliasText(typeNode) : undefined,
-                        ...span(node),
-                    });
+                if (!names.length) {
+                    if (typeNode) {
+                        visit(typeNode, scope);
+                    }
+                    return;
                 }
-                const typedefScope: Scope = names.length ? { kind: 'type', name: names[0] } : scope;
+                const tagged = typeNode && TAGGED_TYPES.has(typeNode.type) ? typeNode : null;
+                const tagName = tagged?.childForFieldName('name')?.text;
+                let typedefNames = names;
+                let typedefScope: Scope = { kind: 'typedef', name: names[0] };
+                let aliasOf: TypeDefInfo['aliasOf'] = tagged && tagName ? { kind: tagKind(tagged), name: tagName } : undefined;
+                let aliasTextValue = typeNode ? aliasText(typeNode) : undefined;
+                if (tagged && !tagName && tagged.childForFieldName('body')) {
+                    // `typedef struct { ... } List;`: the typedef is the struct's only
+                    // name, so report it as struct `List`. Extra names alias it.
+                    const kind = tagKind(tagged);
+                    out.types.push({ kind, name: names[0], ...span(node) });
+                    typedefScope = { kind, name: names[0] };
+                    aliasOf = { kind, name: names[0] };
+                    aliasTextValue = `${kind} ${names[0]}`;
+                    typedefNames = names.slice(1);
+                }
+                for (const name of typedefNames) {
+                    out.types.push({ kind: 'typedef', name, aliasOf, aliasText: aliasTextValue, ...span(node) });
+                }
                 if (typeNode) {
                     visit(typeNode, typedefScope);
                 }
                 // Function-pointer typedefs: parameter types are used by the typedef.
                 // (Don't walk declarators generically: the new name is itself a type_identifier.)
-                for (const d of declarators) {
+                for (const d of fieldNodes(node, 'declarator')) {
                     const params = findFunctionDeclarator(d)?.childForFieldName('parameters');
                     if (params) {
                         visit(params, typedefScope);
@@ -290,14 +323,14 @@ function extract(root: Node, filePath: string): ParsedFile {
             }
 
             case 'type_identifier':
-                addRef(scope, node.text, 'typedef', node);
+                addRef(scope, node.text, false, node);
                 return;
         }
 
         visitChildren(node, scope);
     };
 
-    visit(root, { kind: 'file', name: filePath });
+    visit(root, { kind: 'file' });
     return out;
 }
 
@@ -315,14 +348,18 @@ function fieldNodes(node: Node, field: string): Node[] {
 
 function span(node: Node): Span {
     return {
-        line: node.startPosition.row,
-        column: node.startPosition.column,
-        endLine: node.endPosition.row,
+        line: node.startPosition.row + 1,
+        endLine: node.endPosition.row + 1,
     };
 }
 
-function tagKind(node: Node): TypeKind {
-    return node.type.split('_')[0] as TypeKind; // struct_specifier -> struct
+function scopeKey(scope: Scope): string {
+    return scope.kind === 'file' ? 'file' : `${scope.kind}:${scope.name}`;
+}
+
+/** struct_specifier/union_specifier -> 'struct' (types.ts has no union kind), enum_specifier -> 'enum' */
+function tagKind(node: Node): 'struct' | 'enum' {
+    return node.type === 'enum_specifier' ? 'enum' : 'struct';
 }
 
 function squash(s: string): string {
@@ -379,7 +416,8 @@ function signatureOf(node: Node, fd: Node): string {
 function aliasText(typeNode: Node): string {
     if (TAGGED_TYPES.has(typeNode.type)) {
         const n = typeNode.childForFieldName('name');
-        return `${tagKind(typeNode)} ${n ? n.text : '(anonymous)'}`;
+        const keyword = typeNode.type.split('_')[0]; // keep `union` as written
+        return `${keyword} ${n ? n.text : '(anonymous)'}`;
     }
     return squash(typeNode.text);
 }
@@ -388,27 +426,28 @@ function aliasText(typeNode: Node): string {
 // Debug output (Phase 2 verify step)
 // ---------------------------------------------------------------------------
 
-/** Human-readable dump for the Output channel. Lines shown 1-based. */
+/** Human-readable dump for the Output channel. */
 export function formatParsedFile(p: ParsedFile): string {
-    const L = (s: Span) => `:${s.line + 1}`;
-    const lines: string[] = [`=== ${p.filePath}${p.hasErrors ? '  (parse errors)' : ''}`];
+    const L = (s: Span) => `:${s.line}`;
+    const lines: string[] = [`=== ${p.filePath} (${p.language})${p.hasErrors ? '  (parse errors)' : ''}`];
 
     for (const i of p.includes) {
         lines.push(`  include   ${i.system ? `<${i.path}>` : `"${i.path}"`}${L(i)}`);
     }
     for (const f of p.functions) {
-        const tag = f.isDefinition ? 'def  ' : 'proto';
+        const tag = f.kind === 'function' ? 'def  ' : 'proto';
         lines.push(`  ${tag}     ${f.signature}${f.isStatic ? '  [static]' : ''}${L(f)}`);
     }
     for (const t of p.types) {
-        lines.push(`  type      ${t.kind} ${t.name}${t.aliasOf ? ` = ${t.aliasOf}` : ''}${L(t)}`);
+        const alias = t.aliasText ? ` = ${t.aliasText}` : '';
+        lines.push(`  type      ${t.kind} ${t.name}${alias}${L(t)}`);
     }
     for (const c of p.calls) {
         lines.push(`  call      ${c.caller} -> ${c.callee}${L(c)}`);
     }
     for (const r of p.typeRefs) {
-        const what = r.kind === 'typedef' ? r.name : `${r.kind} ${r.name}`;
-        lines.push(`  uses      ${r.from.kind} ${r.from.name} -> ${what}${L(r)}`);
+        const from = r.from.kind === 'file' ? 'file' : `${r.from.kind} ${r.from.name}`;
+        lines.push(`  uses      ${from} -> ${r.tagged ? 'tag ' : ''}${r.name}${L(r)}`);
     }
     return lines.join('\n');
 }
