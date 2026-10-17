@@ -90,4 +90,4 @@ async function readSnippet(readSource, n, maxLines) {
   }
 }
 
-module.exports = { terms, relevance, buildContext, readSnippet };
+module.exports = { STOP_WORDS, terms, relevance, buildContext, readSnippet };
