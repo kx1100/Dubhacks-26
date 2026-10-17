@@ -22,7 +22,7 @@
     "visualization",
     "architecture"
   ],
-  "main": "./src/extension.js",
+  "main": "./dist/extension.js",
   "activationEvents": [
     "onLanguage:c",
     "onLanguage:cpp"

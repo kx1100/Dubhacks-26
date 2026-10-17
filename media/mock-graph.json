@@ -1,0 +1,59 @@
+{
+  "nodes": [
+    { "id": "file:test-fixtures/c-demo/main.c", "kind": "file", "label": "main.c", "file": "test-fixtures/c-demo/main.c", "fileRole": "source", "language": "c" },
+    { "id": "file:test-fixtures/c-demo/list.h", "kind": "file", "label": "list.h", "file": "test-fixtures/c-demo/list.h", "fileRole": "header", "language": "c" },
+    { "id": "file:test-fixtures/c-demo/list.c", "kind": "file", "label": "list.c", "file": "test-fixtures/c-demo/list.c", "fileRole": "source", "language": "c" },
+    { "id": "file:test-fixtures/c-demo/util.h", "kind": "file", "label": "util.h", "file": "test-fixtures/c-demo/util.h", "fileRole": "header", "language": "c" },
+    { "id": "file:test-fixtures/c-demo/util.c", "kind": "file", "label": "util.c", "file": "test-fixtures/c-demo/util.c", "fileRole": "source", "language": "c" },
+
+    { "id": "function:test-fixtures/c-demo/main.c:main", "kind": "function", "label": "main", "parent": "file:test-fixtures/c-demo/main.c", "file": "test-fixtures/c-demo/main.c", "line": 4, "signature": "int main(void)" },
+
+    { "id": "struct:test-fixtures/c-demo/list.h:Node", "kind": "struct", "label": "Node", "parent": "file:test-fixtures/c-demo/list.h", "file": "test-fixtures/c-demo/list.h", "line": 6, "signature": "typedef struct Node { int value; struct Node *next; } Node" },
+    { "id": "struct:test-fixtures/c-demo/list.h:List", "kind": "struct", "label": "List", "parent": "file:test-fixtures/c-demo/list.h", "file": "test-fixtures/c-demo/list.h", "line": 11, "signature": "typedef struct List { Node *head; size_t length; } List" },
+    { "id": "prototype:test-fixtures/c-demo/list.h:list_create", "kind": "prototype", "label": "list_create", "parent": "file:test-fixtures/c-demo/list.h", "file": "test-fixtures/c-demo/list.h", "line": 16, "signature": "List *list_create(void)" },
+    { "id": "prototype:test-fixtures/c-demo/list.h:list_push", "kind": "prototype", "label": "list_push", "parent": "file:test-fixtures/c-demo/list.h", "file": "test-fixtures/c-demo/list.h", "line": 17, "signature": "void list_push(List *list, int value)" },
+    { "id": "prototype:test-fixtures/c-demo/list.h:list_free", "kind": "prototype", "label": "list_free", "parent": "file:test-fixtures/c-demo/list.h", "file": "test-fixtures/c-demo/list.h", "line": 18, "signature": "void list_free(List *list)" },
+
+    { "id": "function:test-fixtures/c-demo/list.c:list_create", "kind": "function", "label": "list_create", "parent": "file:test-fixtures/c-demo/list.c", "file": "test-fixtures/c-demo/list.c", "line": 5, "signature": "List *list_create(void)" },
+    { "id": "function:test-fixtures/c-demo/list.c:list_push", "kind": "function", "label": "list_push", "parent": "file:test-fixtures/c-demo/list.c", "file": "test-fixtures/c-demo/list.c", "line": 12, "signature": "void list_push(List *list, int value)" },
+    { "id": "function:test-fixtures/c-demo/list.c:list_free", "kind": "function", "label": "list_free", "parent": "file:test-fixtures/c-demo/list.c", "file": "test-fixtures/c-demo/list.c", "line": 20, "signature": "void list_free(List *list)" },
+
+    { "id": "enum:test-fixtures/c-demo/util.h:LogLevel", "kind": "enum", "label": "LogLevel", "parent": "file:test-fixtures/c-demo/util.h", "file": "test-fixtures/c-demo/util.h", "line": 6, "signature": "typedef enum LogLevel { LOG_INFO, LOG_ERROR } LogLevel" },
+    { "id": "prototype:test-fixtures/c-demo/util.h:util_xmalloc", "kind": "prototype", "label": "util_xmalloc", "parent": "file:test-fixtures/c-demo/util.h", "file": "test-fixtures/c-demo/util.h", "line": 8, "signature": "void *util_xmalloc(size_t size)" },
+    { "id": "prototype:test-fixtures/c-demo/util.h:util_log", "kind": "prototype", "label": "util_log", "parent": "file:test-fixtures/c-demo/util.h", "file": "test-fixtures/c-demo/util.h", "line": 9, "signature": "void util_log(LogLevel level, const char *msg)" },
+
+    { "id": "function:test-fixtures/c-demo/util.c:util_xmalloc", "kind": "function", "label": "util_xmalloc", "parent": "file:test-fixtures/c-demo/util.c", "file": "test-fixtures/c-demo/util.c", "line": 5, "signature": "void *util_xmalloc(size_t size)" },
+    { "id": "function:test-fixtures/c-demo/util.c:util_log", "kind": "function", "label": "util_log", "parent": "file:test-fixtures/c-demo/util.c", "file": "test-fixtures/c-demo/util.c", "line": 13, "signature": "void util_log(LogLevel level, const char *msg)" }
+  ],
+  "edges": [
+    { "id": "include:file:test-fixtures/c-demo/main.c->file:test-fixtures/c-demo/list.h", "kind": "include", "source": "file:test-fixtures/c-demo/main.c", "target": "file:test-fixtures/c-demo/list.h" },
+    { "id": "include:file:test-fixtures/c-demo/main.c->file:test-fixtures/c-demo/util.h", "kind": "include", "source": "file:test-fixtures/c-demo/main.c", "target": "file:test-fixtures/c-demo/util.h" },
+    { "id": "include:file:test-fixtures/c-demo/list.c->file:test-fixtures/c-demo/list.h", "kind": "include", "source": "file:test-fixtures/c-demo/list.c", "target": "file:test-fixtures/c-demo/list.h" },
+    { "id": "include:file:test-fixtures/c-demo/list.c->file:test-fixtures/c-demo/util.h", "kind": "include", "source": "file:test-fixtures/c-demo/list.c", "target": "file:test-fixtures/c-demo/util.h" },
+    { "id": "include:file:test-fixtures/c-demo/util.c->file:test-fixtures/c-demo/util.h", "kind": "include", "source": "file:test-fixtures/c-demo/util.c", "target": "file:test-fixtures/c-demo/util.h" },
+
+    { "id": "pair:file:test-fixtures/c-demo/list.h->file:test-fixtures/c-demo/list.c", "kind": "pair", "source": "file:test-fixtures/c-demo/list.h", "target": "file:test-fixtures/c-demo/list.c" },
+    { "id": "pair:file:test-fixtures/c-demo/util.h->file:test-fixtures/c-demo/util.c", "kind": "pair", "source": "file:test-fixtures/c-demo/util.h", "target": "file:test-fixtures/c-demo/util.c" },
+
+    { "id": "proto-def:prototype:test-fixtures/c-demo/list.h:list_create->function:test-fixtures/c-demo/list.c:list_create", "kind": "proto-def", "source": "prototype:test-fixtures/c-demo/list.h:list_create", "target": "function:test-fixtures/c-demo/list.c:list_create" },
+    { "id": "proto-def:prototype:test-fixtures/c-demo/list.h:list_push->function:test-fixtures/c-demo/list.c:list_push", "kind": "proto-def", "source": "prototype:test-fixtures/c-demo/list.h:list_push", "target": "function:test-fixtures/c-demo/list.c:list_push" },
+    { "id": "proto-def:prototype:test-fixtures/c-demo/list.h:list_free->function:test-fixtures/c-demo/list.c:list_free", "kind": "proto-def", "source": "prototype:test-fixtures/c-demo/list.h:list_free", "target": "function:test-fixtures/c-demo/list.c:list_free" },
+    { "id": "proto-def:prototype:test-fixtures/c-demo/util.h:util_xmalloc->function:test-fixtures/c-demo/util.c:util_xmalloc", "kind": "proto-def", "source": "prototype:test-fixtures/c-demo/util.h:util_xmalloc", "target": "function:test-fixtures/c-demo/util.c:util_xmalloc" },
+    { "id": "proto-def:prototype:test-fixtures/c-demo/util.h:util_log->function:test-fixtures/c-demo/util.c:util_log", "kind": "proto-def", "source": "prototype:test-fixtures/c-demo/util.h:util_log", "target": "function:test-fixtures/c-demo/util.c:util_log" },
+
+    { "id": "type-use:function:test-fixtures/c-demo/main.c:main->struct:test-fixtures/c-demo/list.h:List", "kind": "type-use", "source": "function:test-fixtures/c-demo/main.c:main", "target": "struct:test-fixtures/c-demo/list.h:List" },
+    { "id": "type-use:function:test-fixtures/c-demo/list.c:list_create->struct:test-fixtures/c-demo/list.h:List", "kind": "type-use", "source": "function:test-fixtures/c-demo/list.c:list_create", "target": "struct:test-fixtures/c-demo/list.h:List" },
+    { "id": "type-use:function:test-fixtures/c-demo/list.c:list_push->struct:test-fixtures/c-demo/list.h:List", "kind": "type-use", "source": "function:test-fixtures/c-demo/list.c:list_push", "target": "struct:test-fixtures/c-demo/list.h:List" },
+    { "id": "type-use:function:test-fixtures/c-demo/list.c:list_push->struct:test-fixtures/c-demo/list.h:Node", "kind": "type-use", "source": "function:test-fixtures/c-demo/list.c:list_push", "target": "struct:test-fixtures/c-demo/list.h:Node" },
+    { "id": "type-use:function:test-fixtures/c-demo/list.c:list_free->struct:test-fixtures/c-demo/list.h:List", "kind": "type-use", "source": "function:test-fixtures/c-demo/list.c:list_free", "target": "struct:test-fixtures/c-demo/list.h:List" },
+    { "id": "type-use:function:test-fixtures/c-demo/list.c:list_free->struct:test-fixtures/c-demo/list.h:Node", "kind": "type-use", "source": "function:test-fixtures/c-demo/list.c:list_free", "target": "struct:test-fixtures/c-demo/list.h:Node" },
+    { "id": "type-use:function:test-fixtures/c-demo/util.c:util_log->enum:test-fixtures/c-demo/util.h:LogLevel", "kind": "type-use", "source": "function:test-fixtures/c-demo/util.c:util_log", "target": "enum:test-fixtures/c-demo/util.h:LogLevel" },
+
+    { "id": "call:function:test-fixtures/c-demo/main.c:main->function:test-fixtures/c-demo/list.c:list_create", "kind": "call", "source": "function:test-fixtures/c-demo/main.c:main", "target": "function:test-fixtures/c-demo/list.c:list_create" },
+    { "id": "call:function:test-fixtures/c-demo/main.c:main->function:test-fixtures/c-demo/list.c:list_push", "kind": "call", "source": "function:test-fixtures/c-demo/main.c:main", "target": "function:test-fixtures/c-demo/list.c:list_push" },
+    { "id": "call:function:test-fixtures/c-demo/main.c:main->function:test-fixtures/c-demo/list.c:list_free", "kind": "call", "source": "function:test-fixtures/c-demo/main.c:main", "target": "function:test-fixtures/c-demo/list.c:list_free" },
+    { "id": "call:function:test-fixtures/c-demo/main.c:main->function:test-fixtures/c-demo/util.c:util_log", "kind": "call", "source": "function:test-fixtures/c-demo/main.c:main", "target": "function:test-fixtures/c-demo/util.c:util_log" },
+    { "id": "call:function:test-fixtures/c-demo/list.c:list_create->function:test-fixtures/c-demo/util.c:util_xmalloc", "kind": "call", "source": "function:test-fixtures/c-demo/list.c:list_create", "target": "function:test-fixtures/c-demo/util.c:util_xmalloc" },
+    { "id": "call:function:test-fixtures/c-demo/list.c:list_push->function:test-fixtures/c-demo/util.c:util_xmalloc", "kind": "call", "source": "function:test-fixtures/c-demo/list.c:list_push", "target": "function:test-fixtures/c-demo/util.c:util_xmalloc" }
+  ]
+}
