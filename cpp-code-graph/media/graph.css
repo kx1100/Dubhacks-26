@@ -1029,3 +1029,81 @@ body.vscode-light {
 .badge.dim {
   opacity: 0.35;
 }
+
+/* AI investigation */
+
+.ask .modes {
+  display: flex;
+  align-items: stretch;
+  margin-bottom: 6px;
+}
+.node.visited .box {
+  stroke: var(--purple);
+  stroke-width: 2.5px;
+  filter: drop-shadow(0 0 5px var(--purple));
+  animation: visited-pulse 1.2s ease-in-out infinite alternate;
+}
+@keyframes visited-pulse {
+  from { stroke-opacity: 1; }
+  to { stroke-opacity: 0.45; }
+}
+.answer details.steps {
+  margin: 6px 0 10px;
+}
+.answer details.steps ol {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+  counter-reset: step;
+}
+.stepi {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 12px;
+  cursor: pointer;
+  counter-increment: step;
+}
+.stepi::before {
+  content: counter(step);
+  color: var(--muted);
+  min-width: 14px;
+  text-align: right;
+  font-size: 11px;
+}
+.stepi:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+.stepi .sg {
+  color: var(--purple);
+  min-width: 14px;
+  text-align: center;
+}
+.stepi .st {
+  flex: 1;
+  word-break: break-word;
+}
+.stepi.live .st::after {
+  content: ' …';
+  color: var(--muted);
+}
+.stepi.live .sg {
+  animation: visited-pulse 0.8s ease-in-out infinite alternate;
+}
+.answer details.evidence li {
+  line-height: 1.45;
+}
+.answer details.evidence a.site {
+  white-space: nowrap;
+  word-break: normal;
+}
+.askrow .meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pill.conf-high { color: var(--green); }
+.pill.conf-medium { color: var(--yellow); }
+.pill.conf-low { color: var(--orange); }

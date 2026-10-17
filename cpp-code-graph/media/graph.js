@@ -56,6 +56,14 @@
     bundled: 'One arrow per pair of containers, plus the selected node\'s own arrows',
     all: 'Every arrow'
   };
+  // Ask AI modes: each changes how the model investigates (see src/ai/agent.js).
+  const AI_MODES = {
+    ask: { label: 'Ask', desc: 'A direct answer that looks up only what it needs', placeholder: 'Ask about the code, e.g. “How are shapes drawn?”' },
+    path: { label: 'Trace path', desc: 'Reconstruct the execution path in call order, from main or the selected node', placeholder: 'What to trace, e.g. “What happens when the program starts?”' },
+    investigate: { label: 'Investigate', desc: 'A thorough, step-by-step investigation that checks its ideas against the code', placeholder: 'What to investigate, e.g. “Why does the canvas depend on the logger?”' }
+  };
+  const STEP_GLYPHS = { search_symbols: '⌕', get_node: 'ⓘ', neighbors: '⇄', call_paths: '⤳', reach: '⇶', read_code: '‹›', grep: '≡' };
+
   // View presets: each answers one question and sets arrows, filters and depth.
   //   edges      relationship kinds to draw
   //   fields     show fields and global variables
@@ -112,7 +120,9 @@
     highlight: null, // {ids:Set, path:[], label}
     search: { q: '', matches: [], index: -1 },
     tab: 'details',
-    ai: { busy: false, question: '', answer: '', model: null },
+    ai: { busy: false, question: '', answer: '', model: null, steps: [] },
+    aiMode: AI_MODES[saved.aiMode] ? saved.aiMode : 'ask',
+    visited: null, // Set of node ids the AI investigation is looking at (current or hovered step)
     layout: null,
     savedMode: saved.mode || null
   };
@@ -182,6 +192,7 @@
       <div id="tab-details" class="tabbody"></div>
       <div id="tab-ai" class="tabbody hidden">
         <div class="ask">
+          <div class="seg modes" id="aiModes" role="group" aria-label="Mode"></div>
           <textarea id="question" rows="3" placeholder="Ask about the code, e.g. “What happens when the program starts?”  (Ctrl+Enter)"></textarea>
           <div class="askrow">
             <label class="toggle" title="Send the selected node as extra context"><input type="checkbox" id="useSelection" checked> Use selection as context</label>
@@ -224,7 +235,8 @@
       edgeMode: S.edgeMode,
       direction: S.direction,
       view: S.view,
-      mode: S.mode
+      mode: S.mode,
+      aiMode: S.aiMode
     });
   }
 
@@ -1191,6 +1203,7 @@
     const { vis, abs } = S.layout;
     const related = relatedSets();
     const hl = highlightReps();
+    const visitedReps = S.visited ? new Set([...S.visited].map(id => vis.repOf(id)).filter(Boolean)) : null;
     const dimActive = (S.focusMode && related) || hl;
     const matchSet = new Set(S.search.matches.map(id => vis.repOf(id)).filter(Boolean));
     const changedBelow = S.mode === 'diff' ? changedDescendantCounts() : null;
@@ -1215,8 +1228,9 @@
       if (changedBelow && !n.status && changedBelow.get(id)) cls.push('has-changes');
       if (matchSet.has(id)) cls.push('match');
       if (hl && hl.has(id)) cls.push('hl');
+      if (visitedReps && visitedReps.has(id)) cls.push('visited');
       if (dimActive) {
-        const keep = (hl && hl.has(id)) || (S.focusMode && related && related.nodes.has(id)) || (hl && b.container && [...hl].some(h => isDescendant(h, id)));
+        const keep = (hl && hl.has(id)) || (visitedReps && visitedReps.has(id)) || (S.focusMode && related && related.nodes.has(id)) || (hl && b.container && [...hl].some(h => isDescendant(h, id)));
         if (!keep) cls.push('dim');
       }
       if (n.isPure) cls.push('abstract');
@@ -1894,7 +1908,7 @@
         else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
         else if (act === 'explain') {
           switchTab('ai');
-          ask(`Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`);
+          ask(`Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask');
         }
       };
     });
@@ -2024,14 +2038,65 @@
     $('suggestions').querySelectorAll('.sugg').forEach(b => (b.onclick = () => ask(b.textContent)));
   }
 
-  function ask(q) {
+  function ask(q, mode) {
     q = (q || $('question').value).trim();
     if (!q) return;
     $('question').value = q;
     const focus = $('useSelection').checked ? S.selected : null;
-    S.ai = { busy: true, question: q, answer: '', model: null };
+    mode = AI_MODES[mode] ? mode : S.aiMode;
+    S.ai = { busy: true, question: q, answer: '', model: null, steps: [], mode };
     renderAnswer();
-    vscode.postMessage({ type: 'ask', question: q, focus });
+    vscode.postMessage({ type: 'ask', question: q, focus, mode });
+  }
+
+  function renderModes() {
+    const el = $('aiModes');
+    el.innerHTML =
+      '<span class="seglabel">Mode</span>' +
+      Object.entries(AI_MODES)
+        .map(([k, m]) => `<button data-ai-mode="${k}" title="${esc(m.desc)}" aria-pressed="${k === S.aiMode}" class="${k === S.aiMode ? 'active' : ''}">${esc(m.label)}</button>`)
+        .join('');
+    el.querySelectorAll('button').forEach(
+      b =>
+        (b.onclick = () => {
+          S.aiMode = b.dataset.aiMode;
+          persist();
+          renderModes();
+        })
+    );
+    $('question').placeholder = AI_MODES[S.aiMode].placeholder + '  (Ctrl+Enter)';
+  }
+
+  /** Marks the nodes an investigation step looked at (null clears). */
+  function setVisited(ids) {
+    S.visited = ids && ids.length ? new Set(ids.filter(id => S.nodes.has(id))) : null;
+    if (S.layout) render();
+  }
+
+  function renderSteps(a) {
+    const open = a.stepsOpen !== undefined ? a.stepsOpen : true;
+    const rows = a.steps
+      .map((st, i) => {
+        const live = a.busy && i === a.steps.length - 1;
+        const n = (st.nodeIds || []).length;
+        return `<li class="stepi${live ? ' live' : ''}" data-step="${i}"${st.note ? ` title="${esc(st.note)}"` : ''}><span class="sg">${STEP_GLYPHS[st.tool] || '•'}</span><span class="st">${esc(st.summary || st.tool)}</span>${n ? `<span class="muted">${n}</span>` : ''}</li>`;
+      })
+      .join('');
+    return `<details class="steps" id="aiSteps"${open ? ' open' : ''}><summary>${a.busy ? 'Investigating' : 'Investigation'} <span class="muted">${a.steps.length} step${a.steps.length === 1 ? '' : 's'}</span></summary><ol>${rows}</ol></details>`;
+  }
+
+  function renderEvidence(a) {
+    const ev = (a.evidence || []).filter(e => e.file || e.nodeId);
+    if (!ev.length) return '';
+    const items = ev
+      .map(e => {
+        const where = e.file
+          ? `<a class="site" data-open-file="${esc(e.file)}" data-open-line="${e.line || 1}" data-side="target" title="Open ${esc(e.file + ':' + (e.line || 1))}">${esc(e.file.split('/').pop() + (e.line ? ':' + e.line : ''))}</a>`
+          : '';
+        return `<li>${e.claim ? esc(e.claim) + ' ' : ''}${e.nodeId && S.nodes.has(e.nodeId) ? nodeChip(e.nodeId) + ' ' : ''}${where}</li>`;
+      })
+      .join('');
+    return `<details class="evidence" open><summary>Evidence <span class="muted">${ev.length}</span></summary><ul class="rel">${items}</ul></details>`;
   }
 
   function mdLite(text) {
@@ -2065,15 +2130,37 @@
     const el = $('answer');
     const a = S.ai;
     if (!a.question) {
-      el.innerHTML = '<p class="muted">Answers highlight the relevant nodes in the graph and number the execution path when there is one. Uses the language model configured in VS Code (e.g. GitHub Copilot).</p>';
+      el.innerHTML = '<p class="muted">Answers highlight the relevant nodes in the graph and number the execution path when there is one. With a model that can call tools, you can watch the investigation step by step. Uses the language model configured in VS Code (e.g. GitHub Copilot).</p>';
       return;
     }
-    el.innerHTML = `<div class="q">${esc(a.question)}</div>
-      <div class="a">${a.answer ? mdLite(a.answer) : a.busy ? '<span class="muted">Thinking…</span>' : ''}</div>
+    const confTitle = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
+    const conf = !a.busy && a.confidence ? `<span class="pill sm conf conf-${a.confidence}" title="${esc(confTitle[a.confidence] || '')}">${esc(a.confidence)} confidence</span>` : '';
+    const modeLabel = a.mode && a.mode !== 'ask' && AI_MODES[a.mode] ? `<span class="pill sm">${esc(AI_MODES[a.mode].label)}</span> ` : '';
+    const hasSteps = a.steps && a.steps.length;
+    const showBtn = a.highlight && a.highlight.length ? `<button id="aiShow">Show ${a.highlight.length} nodes in graph</button>` : '<span></span>';
+    el.innerHTML = `<div class="q">${modeLabel}${esc(a.question)}</div>
+      ${hasSteps ? renderSteps(a) : ''}
+      <div class="a">${a.answer ? mdLite(a.answer) : a.busy ? `<span class="muted">${hasSteps ? 'Investigating…' : 'Thinking…'}</span>` : ''}</div>
+      ${!a.busy ? renderEvidence(a) : ''}
       ${a.busy ? '<button id="cancelAsk">Stop</button>' : ''}
-      ${!a.busy && a.highlight && a.highlight.length ? `<div class="askrow"><button id="aiShow">Show ${a.highlight.length} nodes in graph</button>${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</div>` : ''}`;
+      ${!a.busy && ((a.highlight && a.highlight.length) || conf) ? `<div class="askrow">${showBtn}<span class="meta">${conf}${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</span></div>` : ''}`;
     if ($('cancelAsk')) $('cancelAsk').onclick = () => vscode.postMessage({ type: 'cancelAsk' });
     if ($('aiShow')) $('aiShow').onclick = () => applyAiHighlight(true);
+    const steps = $('aiSteps');
+    if (steps) {
+      steps.ontoggle = () => (a.stepsOpen = steps.open);
+      steps.querySelectorAll('.stepi').forEach(li => {
+        const st = a.steps[+li.dataset.step];
+        li.onmouseenter = () => setVisited(st.nodeIds);
+        li.onmouseleave = () => setVisited(a.busy && a.steps.length ? a.steps[a.steps.length - 1].nodeIds : null);
+        li.onclick = () => {
+          const ids = new Set((st.nodeIds || []).filter(id => S.nodes.has(id)));
+          if (!ids.size) return;
+          S.highlight = { ids, path: [], label: `Step ${+li.dataset.step + 1}: ${st.summary || st.tool}` };
+          revealAll(ids);
+        };
+      });
+    }
     bindLinks(el);
   }
 
@@ -2441,7 +2528,8 @@
         reveal(m.id);
         break;
       case 'aiStart':
-        S.ai = { busy: true, question: m.question, answer: '', model: null };
+        // Keep the mode when this confirms a question asked from the panel; questions from the command palette use Ask.
+        S.ai = { busy: true, question: m.question, answer: '', model: null, steps: [], mode: S.ai.busy && S.ai.question === m.question ? S.ai.mode : 'ask' };
         $('question').value = m.question;
         switchTab('ai');
         renderAnswer();
@@ -2450,14 +2538,24 @@
         S.ai.answer = m.text;
         renderAnswer();
         break;
+      case 'aiStep':
+        S.ai.steps.push(m.step);
+        renderAnswer();
+        setVisited(m.step.nodeIds);
+        break;
       case 'aiResult':
-        S.ai = { busy: false, question: S.ai.question, answer: m.answer, highlight: m.highlight, path: m.path, model: m.model };
+        S.ai = {
+          busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], stepsOpen: S.ai.stepsOpen,
+          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, evidence: m.evidence, confidence: m.confidence, model: m.model
+        };
+        S.visited = null;
         renderAnswer();
         if (m.highlight && m.highlight.length) applyAiHighlight(false);
         break;
     }
   });
 
+  renderModes();
   renderSuggestions();
   renderAnswer();
   setStatus('Scanning C/C++ files…', true);

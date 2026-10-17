@@ -163,6 +163,63 @@ async function main() {
     await evaluate(`(() => { const b = document.querySelector('#layerBadges .badge'); window.__badgeTarget = b.dataset.badge; click(b); })()`);
     assert.strictEqual(await evaluate('cg.S.selected'), await evaluate('window.__badgeTarget'), 'clicking a label selects the node it names');
 
+    // 13. Ask AI: the mode chip is sent with the question, steps stream into a timeline,
+    //     the current step's nodes are marked, and the answer shows evidence and confidence.
+    await open('?ai');
+    await evaluate("document.querySelector('.tabs [data-tab=\"ai\"]').click(); true");
+    const modes = await evaluate("[...document.querySelectorAll('#aiModes button')].map(b => b.dataset.aiMode + (b.classList.contains('active') ? '*' : ''))");
+    assert.deepStrictEqual(modes, ['ask*', 'path', 'investigate']);
+    await evaluate("document.querySelector('[data-ai-mode=\"path\"]').click(); true");
+    assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
+    assert.match(await evaluate("document.getElementById('question').placeholder"), /What to trace/);
+    await evaluate("window.__sent.length = 0; document.getElementById('question').value = 'How are shapes drawn?'; document.getElementById('askBtn').click(); true");
+    const askMsg = JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))"));
+    assert.strictEqual(askMsg.mode, 'path');
+    assert(await evaluate("waitFor(() => document.querySelectorAll('#aiSteps .stepi').length === 1)"), 'first step shown');
+    const live = JSON.parse(await evaluate(`JSON.stringify({
+      liveRow: !!document.querySelector('#aiSteps .stepi.live'),
+      visited: document.querySelectorAll('#layerNodes .node.visited').length,
+      stop: !!document.getElementById('cancelAsk'),
+      text: document.querySelector('#answer .a').textContent
+    })`));
+    assert(live.liveRow && live.visited > 0 && live.stop, 'live step marks nodes: ' + JSON.stringify(live));
+    assert.match(live.text, /Investigating/);
+    assert(await evaluate("waitFor(() => !cg.S.ai.busy, 3000)"), 'answer arrives');
+    const done = JSON.parse(await evaluate(`JSON.stringify({
+      steps: [...document.querySelectorAll('#aiSteps .stepi .st')].map(e => e.textContent),
+      live: document.querySelectorAll('#aiSteps .stepi.live').length,
+      visited: document.querySelectorAll('#layerNodes .node.visited').length,
+      chips: document.querySelectorAll('#answer .a .chip').length,
+      evidence: [...document.querySelectorAll('#answer .evidence a.site')].map(a => a.textContent),
+      conf: (document.querySelector('#answer .conf') || {}).textContent,
+      mode: document.querySelector('#answer .q .pill').textContent,
+      path: cg.S.highlight && cg.S.highlight.path.length,
+      summary: document.querySelector('#aiSteps summary').textContent
+    })`));
+    assert.deepStrictEqual(done.steps, ['Searched the question → 3 symbols', 'Outgoing calls of geo::Canvas::render (4)', 'Read the code of geo::Canvas::render']);
+    assert.strictEqual(done.live, 0);
+    assert.strictEqual(done.visited, 0, 'visited marks clear when the answer arrives');
+    assert.strictEqual(done.chips, 4);
+    assert.deepStrictEqual(done.evidence, ['canvas.cpp:18', 'main.cpp:15']);
+    assert.strictEqual(done.conf, 'high confidence');
+    assert.strictEqual(done.mode, 'Trace path');
+    assert.strictEqual(done.path, 4, 'answer path is numbered in the graph');
+    assert.match(done.summary, /Investigation\s+3 steps/);
+    // Hovering a step marks its nodes; clicking it highlights them.
+    await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseenter')); true");
+    assert(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length > 0"), 'hover marks the step nodes');
+    await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseleave')); true");
+    assert.strictEqual(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length"), 0);
+    await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].click(); true");
+    assert.strictEqual(await evaluate('cg.S.highlight.label'), 'Step 2: Outgoing calls of geo::Canvas::render (4)');
+    assert.strictEqual(await evaluate('cg.S.highlight.ids.size'), 3);
+    // Evidence links open the cited line.
+    await evaluate("window.__sent.length = 0; document.querySelector('#answer .evidence a.site').click(); true");
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/canvas.cpp', line: 18 });
+    // Explain from the details panel always uses Ask.
+    await evaluate(`cg.reveal(nodeByName('log_init').id, { center: false }); window.__sent.length = 0; document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="explain"]').click(); true`);
+    assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))")).mode, 'ask');
+
     console.log('ui: ok');
     ws.close();
   } finally {

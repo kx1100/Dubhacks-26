@@ -27,6 +27,8 @@
           window.postMessage({ type: 'source', reqId: m.reqId, startLine: first, lines: all.slice(first - 1, last), truncated: wanted > last }, '*');
         }, 20);
       }
+      // ?ai answers questions with a canned investigation, like the agent in the extension host.
+      if (m.type === 'ask' && new URLSearchParams(location.search).has('ai')) replayInvestigation(m);
       if (m.type === 'ready') {
         const diff = location.search.includes('diff');
         const f = window.__FIXTURES;
@@ -38,6 +40,39 @@
     getState() { return null; },
     setState() {}
   });
+
+  function replayInvestigation(m) {
+    const g = window.__FIXTURES.graph;
+    const by = (key, v) => (g.nodes.find(n => n[key] === v) || {}).id;
+    const main = by('name', 'main');
+    const render = by('qname', 'geo::Canvas::render');
+    const draw = by('qname', 'geo::Shape::draw');
+    const plot = by('qname', 'geo::Canvas::plot');
+    const logMessage = by('name', 'log_message');
+    const steps = [
+      { tool: 'search_symbols', args: { query: m.question }, summary: 'Searched the question → 3 symbols', nodeIds: [render, main, plot] },
+      { tool: 'neighbors', args: { direction: 'out' }, summary: 'Outgoing calls of geo::Canvas::render (4)', nodeIds: [render, logMessage, draw], note: 'Checking what render calls.' },
+      { tool: 'read_code', args: {}, summary: 'Read the code of geo::Canvas::render', nodeIds: [render] }
+    ];
+    const post = (msg, t) => setTimeout(() => window.postMessage(msg, '*'), t);
+    const STEP_MS = 150;
+    post({ type: 'aiStart', question: m.question }, 10);
+    steps.forEach((s, i) => post({ type: 'aiStep', step: { ...s, i } }, STEP_MS * (i + 1)));
+    post({
+      type: 'aiResult',
+      answer: `Drawing starts in [[${main}]], which calls [[${render}]]. Each shape draws itself through [[${draw}]], which plots pixels with [[${plot}]].`,
+      highlight: [main, render, draw, plot],
+      path: [main, render, draw, plot],
+      hops: [{ s: main, t: render, inferred: false }, { s: render, t: draw, inferred: false, uncertain: true }, { s: draw, t: plot, inferred: false }],
+      evidence: [
+        { nodeId: render, file: 'src/canvas.cpp', line: 18, claim: 'render calls draw on each shape' },
+        { nodeId: main, file: 'src/main.cpp', line: 15, claim: 'main hands the shapes to render' }
+      ],
+      confidence: 'high',
+      steps: steps.length,
+      model: 'Harness'
+    }, STEP_MS * (steps.length + 2));
+  }
 </script>
 <script>
   // ?large loads a bigger generated project (see test/gen-large.js).
@@ -48,6 +83,7 @@
 <script>
   // ?code=name (repeatable) opens the inline code card of every node with that name, for screenshots.
   // ?preset=calls|includes|inheritance|structure and ?arrows=selected|bundled|all pick a view.
+  // ?ai replays a canned AI investigation for every question asked.
   const qs = new URLSearchParams(location.search);
   if (qs.get('preset') || qs.get('arrows')) setTimeout(() => {
     if (qs.get('preset')) window.__codeGraph.applyPreset(qs.get('preset'));
