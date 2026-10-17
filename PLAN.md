@@ -2,6 +2,8 @@
 
 Each phase below is sized to be one commit.
 
+> **Status:** the working extension lives in `cpp-code-graph/` and differs from the stack below: plain JavaScript, a hand-written C/C++ parser, and a custom SVG webview, with no TypeScript, tree-sitter or Cytoscape. The phases below remain the feature roadmap. See `cpp-code-graph/README.md` for what is implemented.
+
 `package.json` is the source of truth for command IDs and settings. Every command it contributes is mapped to a phase below:
 
 | Command / setting | Phase |
