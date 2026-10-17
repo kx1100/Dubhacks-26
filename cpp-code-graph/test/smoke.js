@@ -155,5 +155,22 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   await onMessage({ type: 'ask', question: 'Anything?', focus: null });
   const fres = posted.find(m => m.type === 'aiResult');
   if (!fres || fres.answer !== 'Plain answer.' || fres.error) throw new Error('bad fallback result ' + JSON.stringify(fres));
+
+  // Copilot's "Auto" router rejects extension requests with a plain Error; it is skipped when another model exists.
+  const autoModel = {
+    id: 'auto', name: 'Auto', family: 'auto', maxInputTokens: 100000,
+    async sendRequest() { throw new Error('Auto mode needs a prompt or a command to route a request.'); }
+  };
+  vscode.lm.selectChatModels = async () => [autoModel, fallbackModel];
+  posted.length = 0;
+  await onMessage({ type: 'ask', question: 'Anything?', focus: null });
+  const ares = posted.find(m => m.type === 'aiResult');
+  if (!ares || ares.answer !== 'Plain answer.' || ares.model !== 'NoTools') throw new Error('auto model was not skipped ' + JSON.stringify(ares));
+  // With only the router available, its error is reported as a model failure, not a crash.
+  vscode.lm.selectChatModels = async () => [autoModel];
+  posted.length = 0;
+  await onMessage({ type: 'ask', question: 'Anything?', focus: null });
+  const ores = posted.find(m => m.type === 'aiResult');
+  if (!ores || ores.error || !/request failed \(Auto mode needs a prompt/.test(ores.answer)) throw new Error('router error not handled ' + JSON.stringify(ores));
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });
