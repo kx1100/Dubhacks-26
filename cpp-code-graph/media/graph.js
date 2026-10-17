@@ -26,15 +26,28 @@
     { kind: 'inherits', label: 'Inherits', desc: 'derived class → base class' },
     { kind: 'overrides', label: 'Overrides', desc: 'method → base method it overrides' },
     { kind: 'includes', label: 'Includes', desc: 'file → included file' },
-    { kind: 'uses', label: 'Uses type', desc: 'code → class/enum it depends on' }
+    { kind: 'uses', label: 'Uses type', desc: 'code → class/enum it depends on' },
+    { kind: 'pairs', label: 'Header ↔ source', desc: 'file that declares something → file that implements it (list.h → list.c)' }
   ];
   const REL_LABELS = {
     calls: ['Calls', 'Called by'],
     inherits: ['Inherits from', 'Derived classes'],
     overrides: ['Overrides', 'Overridden by'],
     includes: ['Includes', 'Included by'],
-    uses: ['Uses types', 'Used by']
+    uses: ['Uses types', 'Used by'],
+    pairs: ['Implemented in', 'Declares things implemented here']
   };
+  const EDGE_VERBS = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type', pairs: 'is implemented in' };
+
+  // Kinds whose source can be opened inside the node.
+  const CODE_KINDS = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'variable', 'field']);
+  const CODE_BTN_W = 28;
+  const MAX_CODE_LINES = 18; // taller snippets scroll inside the node
+  const CODE_LINE_H = 16;
+  const CODE_PAD = 8;
+  const CODE_MIN_W = 260;
+  const CODE_MAX_W = 640;
+  const PEEK_LINES = 6;
 
   const LEAF_H = 28;
   const HEADER_H = 28;
@@ -60,9 +73,11 @@
     out: new Map(),
     inc: new Map(),
     expanded: new Set(saved.expanded || []),
+    codeOpen: new Set(saved.codeOpen || []), // nodes showing their source inline
+    code: new Map(), // "id|side" -> {status, lines, html, startLine, file, truncated, error}
     selected: saved.selected || null,
     selectedEdge: null,
-    edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false }, saved.edgeOn || {}),
+    edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true }, saved.edgeOn || {}),
     showFields: saved.showFields !== undefined ? saved.showFields : true,
     showNamespaces: saved.showNamespaces !== undefined ? saved.showNamespaces : true,
     showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,
@@ -169,6 +184,7 @@
   function persist() {
     vscode.setState({
       expanded: [...S.expanded],
+      codeOpen: [...S.codeOpen],
       selected: S.selected,
       edgeOn: S.edgeOn,
       showFields: S.showFields,
@@ -205,10 +221,13 @@
     const restore = firstLoad && S.savedMode === mode && S.expanded.size;
     if (modeChanged && !restore) {
       S.expanded = new Set();
+      S.codeOpen = new Set();
       S.view = null;
       S.highlight = null;
     }
     for (const id of [...S.expanded]) if (!S.nodes.has(id)) S.expanded.delete(id);
+    for (const id of [...S.codeOpen]) if (!S.nodes.has(id) || !CODE_KINDS.has(S.nodes.get(id).kind)) S.codeOpen.delete(id);
+    refreshCode();
     if (S.selected && !S.nodes.has(S.selected)) S.selected = null;
     if (!restore && !firstLoad && !modeChanged) {
       // refresh: keep everything
@@ -418,6 +437,125 @@
     return n.name || '(unnamed)';
   }
 
+  // ---------------------------------------------------------------------------
+  // Inline code: a node can be opened into a card showing its source. The text
+  // comes from the extension (`getSource` / `source`) and is cached per node.
+
+  const highlighter = window.CodeHighlight;
+  const sourceRequests = new Map(); // reqId -> {key, id}
+  let reqSeq = 0;
+  let monoW = 0;
+
+  function codeRange(n) {
+    // Prefer the definition (the body) over the declaration.
+    if (n.defFile) return { file: n.defFile, start: n.defLine || n.line, end: n.defEndLine || (n.defFile === n.file ? n.endLine : 0) };
+    return { file: n.file, start: n.line, end: n.endLine };
+  }
+
+  function codeSide(n) {
+    return n.status === 'removed' ? 'base' : 'target';
+  }
+
+  function codeKey(n) {
+    return n.id + '|' + codeSide(n);
+  }
+
+  function canShowCode(n) {
+    return !!n && CODE_KINDS.has(n.kind) && !!n.file;
+  }
+
+  function requestSource(n, force) {
+    const key = codeKey(n);
+    const cur = S.code.get(key);
+    if (cur && !force && (cur.status === 'ready' || cur.status === 'loading')) return cur;
+    const r = codeRange(n);
+    if (!r.file) return null;
+    const reqId = ++reqSeq;
+    sourceRequests.set(reqId, { key, id: n.id });
+    // On a refresh the old text stays visible until the new text arrives.
+    const entry = cur && cur.status === 'ready' ? Object.assign({}, cur, { refreshing: true }) : { status: 'loading' };
+    S.code.set(key, entry);
+    vscode.postMessage({ type: 'getSource', reqId, file: r.file, start: r.start || 1, end: r.end || 0, side: codeSide(n) });
+    return entry;
+  }
+
+  function onSource(m) {
+    const req = sourceRequests.get(m.reqId);
+    if (!req) return;
+    sourceRequests.delete(m.reqId);
+    const n = S.nodes.get(req.id);
+    if (!n) return;
+    if (m.error) S.code.set(req.key, { status: 'error', error: m.error });
+    else S.code.set(req.key, { status: 'ready', lines: m.lines, html: highlighter ? highlighter.highlightLines(m.lines) : m.lines.map(l => esc(l)), startLine: m.startLine, file: codeRange(n).file, truncated: !!m.truncated });
+    if (S.codeOpen.has(req.id)) relayoutKeeping(req.id);
+    if (hoverId === req.id && lastMove) showTooltipFor(lastMove);
+  }
+
+  function refreshCode() {
+    // Keep cached text only for open cards, and re-read those (files may have changed).
+    const open = new Set();
+    for (const id of S.codeOpen) open.add(codeKey(S.nodes.get(id)));
+    for (const key of [...S.code.keys()]) if (!open.has(key)) S.code.delete(key);
+    for (const id of S.codeOpen) requestSource(S.nodes.get(id), true);
+  }
+
+  function toggleCode(id, force) {
+    const n = S.nodes.get(id);
+    if (!canShowCode(n)) return;
+    const open = force !== undefined ? force : !S.codeOpen.has(id);
+    if (open) {
+      // A node is either expanded (its children) or showing its code, not both.
+      S.expanded.delete(id);
+      for (const d of descendantsOf(id)) S.expanded.delete(d);
+      S.codeOpen.add(id);
+      requestSource(n);
+    } else S.codeOpen.delete(id);
+    persist();
+    relayoutKeeping(id);
+  }
+
+  function descendantsOf(id) {
+    const out = [];
+    const stack = [...kids(id)];
+    while (stack.length) {
+      const c = stack.pop();
+      out.push(c);
+      stack.push(...kids(c));
+    }
+    return out;
+  }
+
+  function codeSize(n, labelW) {
+    const e = S.code.get(codeKey(n));
+    const lines = e && e.lines ? e.lines : [e && e.status === 'error' ? e.error || 'Source unavailable' : 'Loading…'];
+    if (!monoW) {
+      const mono = getComputedStyle(document.documentElement).getPropertyValue('--mono') || 'monospace';
+      measureCtx.font = '12px ' + mono;
+      monoW = measureCtx.measureText('MMMMMMMMMM').width / 10 || 7.2;
+    }
+    const longest = lines.reduce((m, l) => Math.max(m, l.replace(/\t/g, '    ').length), 0);
+    const digits = String((e && e.startLine ? e.startLine : 1) + lines.length).length;
+    const w = Math.max(labelW, Math.min(CODE_MAX_W, Math.max(CODE_MIN_W, (longest + digits + 2) * monoW + 2 * CODE_PAD + 16)));
+    const shown = Math.min(lines.length, MAX_CODE_LINES) + (e && e.truncated ? 1 : 0);
+    return { w: Math.ceil(w), h: HEADER_H + shown * CODE_LINE_H + 2 * CODE_PAD };
+  }
+
+  function codeCardHtml(n) {
+    const e = S.code.get(codeKey(n));
+    if (!e || e.status === 'loading') return '<div class="codecard"><div class="cl note">Loading…</div></div>';
+    if (e.status === 'error') return `<div class="codecard"><div class="cl note">${esc(e.error || 'Source unavailable')}</div></div>`;
+    const rows = e.html.map((h, i) => `<div class="cl" data-line="${e.startLine + i}"><span class="ln">${e.startLine + i}</span><span class="ct">${h || ' '}</span></div>`).join('');
+    const more = e.truncated ? `<div class="cl note" data-line="${e.startLine + e.lines.length}">… continues in the editor</div>` : '';
+    return `<div class="codecard">${rows}${more}</div>`;
+  }
+
+  function peekHtml(n) {
+    const e = S.code.get(codeKey(n));
+    if (!e || e.status !== 'ready') return '';
+    const cut = e.html.slice(0, PEEK_LINES);
+    return `<pre class="peek">${cut.join('\n')}${e.html.length > cut.length ? '\n…' : ''}</pre>`;
+  }
+
   function computeLayout(vis) {
     const box = new Map(); // id -> {w, h, x, y (relative to parent content), container}
     const visibleSet = new Set(vis.visible);
@@ -434,7 +572,7 @@
       push(sib, container, [pa[i], pb[i]]);
     }
 
-    const isContainer = id => S.expanded.has(id) && kids(id).some(c => visibleSet.has(c));
+    const isContainer = id => S.expanded.has(id) && !S.codeOpen.has(id) && kids(id).some(c => visibleSet.has(c));
 
     const sizeOf = id => {
       const n = S.nodes.get(id);
@@ -455,8 +593,11 @@
         }
         box.set(id, b);
       } else {
-        const w = Math.ceil(textWidth(label, n.kind === 'class' || n.kind === 'struct' || n.kind === 'file' || n.kind === 'dir')) + 44 + (hasKids ? 18 : 0);
-        box.set(id, { w: Math.max(w, 70), h: LEAF_H, container: false });
+        const w = Math.ceil(textWidth(label, n.kind === 'class' || n.kind === 'struct' || n.kind === 'file' || n.kind === 'dir')) + 44 + (hasKids ? 18 : 0) + (canShowCode(n) ? CODE_BTN_W : 0);
+        if (S.codeOpen.has(id)) {
+          const size = codeSize(n, w);
+          box.set(id, { w: size.w, h: size.h, container: false, code: true });
+        } else box.set(id, { w: Math.max(w, 70), h: LEAF_H, container: false });
       }
     };
     const rootNodes = S.roots.filter(r => visibleSet.has(r));
@@ -467,7 +608,7 @@
     const abs = new Map();
     const place = (id, ox, oy) => {
       const b = box.get(id);
-      const a = { x: ox + b.x, y: oy + b.y, w: b.w, h: b.h, container: b.container };
+      const a = { x: ox + b.x, y: oy + b.y, w: b.w, h: b.h, container: b.container, code: b.code };
       abs.set(id, a);
       if (b.container) for (const k of kids(id)) if (box.has(k) && visibleSet.has(k)) place(k, a.x, a.y);
     };
@@ -659,6 +800,8 @@
   // Rendering
 
   function layoutAndRender(viewAction) {
+    // Expanding a node (for example via Expand all) wins over showing its code.
+    for (const id of [...S.codeOpen]) if (S.expanded.has(id)) S.codeOpen.delete(id);
     const vis = computeVisible();
     const lay = computeLayout(vis);
     S.layout = { vis, abs: lay.abs, width: lay.width, height: lay.height };
@@ -701,8 +844,8 @@
   }
 
   function anchor(b, toward) {
-    // Containers connect at their header so arrows do not cross their content.
-    if (b.container) {
+    // Containers and code cards connect at their header so arrows do not cross their content.
+    if (b.container || b.code) {
       const header = { x: b.x, y: b.y, w: b.w, h: HEADER_H };
       return { cx: b.x + b.w / 2, cy: b.y + HEADER_H / 2, box: header };
     }
@@ -808,12 +951,26 @@
       }
       if (n.isPure) cls.push('abstract');
       const label = esc(nodeLabel(n));
+      const headH = b.container || b.code ? HEADER_H : b.h;
+      const codeable = !b.container && canShowCode(n);
+      const codeShift = codeable ? CODE_BTN_W : 0;
+      if (b.code) cls.push('has-code');
       const toggle = hasKids
-        ? `<g class="toggle" data-toggle="${esc(id)}" transform="translate(${b.w - 20},${(b.container ? HEADER_H : b.h) / 2 - 7})"><rect width="14" height="14" rx="3"/><text x="7" y="11">${S.expanded.has(id) ? '−' : '+'}</text></g>`
+        ? `<g class="toggle" data-toggle="${esc(id)}" transform="translate(${b.w - 20},${headH / 2 - 7})"><rect width="14" height="14" rx="3"/><text x="7" y="11">${S.expanded.has(id) ? '−' : '+'}</text></g>`
         : '';
-      const badge = changedBelow && !n.status && changedBelow.get(id) ? `<circle class="chg-dot" cx="${b.w - (hasKids ? 30 : 10)}" cy="${(b.container ? HEADER_H : b.h) / 2}" r="4"/>` : '';
-      const countBadge = !b.container && hasKids ? `<text class="kids" x="${b.w - 24}" y="${b.h / 2 + 4}" text-anchor="end">${kids(id).length}</text>` : '';
-      if (b.container) {
+      const codeBtn = codeable
+        ? `<g class="codebtn${b.code ? ' on' : ''}" data-code="${esc(id)}" transform="translate(${b.w - (hasKids ? 26 : 8) - 24},${headH / 2 - 7})"><title>${b.code ? 'Hide code' : 'Show code'}</title><rect width="24" height="14" rx="3"/><text x="12" y="11">&lt;/&gt;</text></g>`
+        : '';
+      const badge = changedBelow && !n.status && changedBelow.get(id) ? `<circle class="chg-dot" cx="${b.w - (hasKids ? 30 : 10) - codeShift}" cy="${headH / 2}" r="4"/>` : '';
+      const countBadge = !b.container && hasKids ? `<text class="kids" x="${b.w - 24 - codeShift}" y="${headH / 2 + 4}" text-anchor="end">${kids(id).length}</text>` : '';
+      if (b.code) {
+        leaves += `<g class="${cls.join(' ')}" data-id="${esc(id)}" transform="translate(${b.x},${b.y})">
+          <rect class="box" width="${b.w}" height="${b.h}" rx="8"/>
+          <rect class="head" width="${b.w}" height="${HEADER_H}" rx="8"/>
+          <text class="glyph" x="14" y="${HEADER_H / 2 + 4}">${info.glyph}</text>
+          <text class="label bold" x="28" y="${HEADER_H / 2 + 4}">${label}</text>${countBadge}${badge}${codeBtn}${toggle}
+          <foreignObject class="codefo" x="0" y="${HEADER_H}" width="${b.w}" height="${b.h - HEADER_H}">${codeCardHtml(n)}</foreignObject></g>`;
+      } else if (b.container) {
         containers += `<g class="${cls.join(' ')}" data-id="${esc(id)}" transform="translate(${b.x},${b.y})">
           <rect class="box" width="${b.w}" height="${b.h}" rx="8"/>
           <rect class="head" width="${b.w}" height="${HEADER_H}" rx="8"/>
@@ -823,11 +980,20 @@
         leaves += `<g class="${cls.join(' ')}" data-id="${esc(id)}" transform="translate(${b.x},${b.y})">
           <rect class="box" width="${b.w}" height="${b.h}" rx="${n.kind === 'function' || n.kind === 'method' ? 14 : 5}"/>
           <text class="glyph" x="14" y="${b.h / 2 + 4}">${info.glyph}</text>
-          <text class="label" x="28" y="${b.h / 2 + 4}">${label}</text>${countBadge}${badge}${toggle}</g>`;
+          <text class="label" x="28" y="${b.h / 2 + 4}">${label}</text>${countBadge}${badge}${codeBtn}${toggle}</g>`;
       }
     }
+    // Rebuilding the cards would reset their scroll position.
+    const scrolls = new Map();
+    $('layerNodes').querySelectorAll('.codecard').forEach(el => scrolls.set(el.closest('[data-id]').dataset.id, el.scrollTop));
     $('layerContainers').innerHTML = containers;
     $('layerNodes').innerHTML = leaves;
+    if (scrolls.size) {
+      $('layerNodes').querySelectorAll('.codecard').forEach(el => {
+        const top = scrolls.get(el.closest('[data-id]').dataset.id);
+        if (top) el.scrollTop = top;
+      });
+    }
 
     // Edges; reciprocal pairs are bent apart.
     const pairCount = new Map();
@@ -1035,8 +1201,10 @@
     const n = S.nodes.get(id);
     if (!n || !n.file) return;
     const useDef = which !== 'decl' && n.defFile;
-    const file = useDef ? n.defFile : n.file;
-    const line = useDef ? n.defLine : n.line;
+    // Free functions keep their definition as the node and remember where the prototype is.
+    const useProto = which === 'decl' && n.declFile;
+    const file = useProto ? n.declFile : useDef ? n.defFile : n.file;
+    const line = useProto ? n.declLine : useDef ? n.defLine : n.line;
     vscode.postMessage({ type: 'open', file, line: line || 1, side: n.status === 'removed' ? 'base' : 'target' });
   }
 
@@ -1181,7 +1349,7 @@
     const kindsShown = ['file', 'class', 'struct', 'function', 'method', 'enum', 'namespace', 'field'];
     const nodes = kindsShown.map(k => `<span class="lnode k-${k}"><span class="g">${KIND_INFO[k].glyph}</span>${KIND_INFO[k].label}</span>`).join('');
     const diff = S.mode === 'diff' ? '<div class="lrow"><span class="lnode st-added">added</span><span class="lnode st-removed">removed</span><span class="lnode st-modified">modified</span></div>' : '';
-    el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div>${diff}<div class="hint">Dashed = uncertain call · double-click to expand · Ctrl+click opens source</div></div>`;
+    el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div>${diff}<div class="hint">Dashed = uncertain call · double-click to expand · &lt;/&gt; shows code · Ctrl+click opens source</div></div>`;
     $('legendToggle').onclick = () => {
       el.classList.toggle('collapsed');
       renderLegend();
@@ -1273,7 +1441,12 @@
         return `A folder with ${kids_.length} item${kids_.length === 1 ? '' : 's'}.`;
       case 'file': {
         const inclBy = inc.filter(e => e.kind === 'includes').length;
-        return `${n.header ? 'A header file' : 'A source file'} defining ${kids_.length} top-level item${kids_.length === 1 ? '' : 's'}${n.header ? `, included by ${inclBy} file${inclBy === 1 ? '' : 's'}` : ''}.`;
+        let s = `${n.header ? 'A header file' : 'A source file'} defining ${kids_.length} top-level item${kids_.length === 1 ? '' : 's'}${n.header ? `, included by ${inclBy} file${inclBy === 1 ? '' : 's'}` : ''}.`;
+        const impl = out.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.t) || {}).name).filter(Boolean);
+        const decl = inc.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.s) || {}).name).filter(Boolean);
+        if (impl.length) s += ` Its declarations are implemented in ${impl.map(esc).join(', ')}.`;
+        if (decl.length) s += ` It implements declarations from ${decl.map(esc).join(', ')}.`;
+        return s;
       }
       case 'class':
       case 'struct':
@@ -1335,7 +1508,9 @@
     const side = n.status === 'removed' ? 'base' : 'target';
     let locs = '';
     if (n.file && n.kind !== 'dir') {
-      if (n.defFile && (n.defFile !== n.file || n.defLine !== n.line)) {
+      if (n.declFile) {
+        locs += `<div class="kv"><span>Declared</span>${locLink(n.declFile, n.declLine, side)}</div><div class="kv"><span>Defined</span>${locLink(n.defFile || n.file, n.defLine || n.line, side)}</div>`;
+      } else if (n.defFile && (n.defFile !== n.file || n.defLine !== n.line)) {
         locs += `<div class="kv"><span>Declared</span>${locLink(n.file, n.line, side)}</div><div class="kv"><span>Defined</span>${locLink(n.defFile, n.defLine, side)}</div>`;
       } else locs += `<div class="kv"><span>Location</span>${locLink(n.file, n.line, side)}</div>`;
     }
@@ -1347,7 +1522,7 @@
           .join('')}${children.length > 150 ? `<li class="muted">… and ${children.length - 150} more</li>` : ''}</ul></details>`
       : '';
     let rels = '';
-    for (const k of ['calls', 'inherits', 'overrides', 'includes', 'uses']) {
+    for (const k of ['calls', 'inherits', 'overrides', 'includes', 'uses', 'pairs']) {
       rels += relationSection(REL_LABELS[k][0], byKind(out, k), 't');
       rels += relationSection(REL_LABELS[k][1], byKind(inc, k), 's');
     }
@@ -1362,7 +1537,8 @@
       ${locs}
       <div class="actions">
         ${n.file ? '<button data-act="open" class="primary">Open source</button>' : ''}
-        ${n.defFile && n.file && n.defFile !== n.file ? '<button data-act="openDecl">Declaration</button>' : ''}
+        ${(n.defFile && n.file && n.defFile !== n.file) || n.declFile ? '<button data-act="openDecl">Declaration</button>' : ''}
+        ${canShowCode(n) ? `<button data-act="code" title="Show or hide the source inside the graph node (C)">${S.codeOpen.has(n.id) ? 'Hide code' : 'View code'}</button>` : ''}
         ${children.length ? `<button data-act="toggle">${S.expanded.has(n.id) ? 'Collapse' : 'Expand'}</button>` : ''}
         ${isFn ? '<button data-act="callees" title="Highlight everything this function calls, directly or indirectly">Trace callees</button><button data-act="callers" title="Highlight everything that leads to this function">Trace callers</button>' : ''}
         <button data-act="center">Center</button>
@@ -1376,7 +1552,10 @@
         const act = b.dataset.act;
         if (act === 'open') openSource(n.id);
         else if (act === 'openDecl') openSource(n.id, 'decl');
-        else if (act === 'toggle') {
+        else if (act === 'code') {
+          toggleCode(n.id);
+          renderDetails();
+        } else if (act === 'toggle') {
           toggle(n.id);
           renderDetails();
         } else if (act === 'callees') trace(n.id, 'out');
@@ -1461,7 +1640,7 @@
   }
 
   function renderEdgeDetails(el, e) {
-    const verb = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type' }[e.kind];
+    const verb = EDGE_VERBS[e.kind];
     const raw = e.raw
       .slice(0, 100)
       .map(r => {
@@ -1652,6 +1831,7 @@
   let drag = null;
   svg.addEventListener('pointerdown', ev => {
     if (ev.button !== 0 || !S.view) return;
+    if (ev.target.closest && ev.target.closest('.codecard')) return; // code cards scroll and select text
     drag = { x: ev.clientX, y: ev.clientY, vx: S.view.x, vy: S.view.y, moved: false, target: ev.target, pointerId: ev.pointerId };
   });
   svg.addEventListener('pointermove', ev => {
@@ -1688,6 +1868,12 @@
       return;
     }
     ev = { target, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey };
+    const cb = ev.target.closest && ev.target.closest('[data-code]');
+    if (cb) {
+      toggleCode(cb.dataset.code);
+      if (S.selected === cb.dataset.code) renderDetails();
+      return;
+    }
     const tg = ev.target.closest && ev.target.closest('[data-toggle]');
     if (tg) {
       toggle(tg.dataset.toggle);
@@ -1720,9 +1906,19 @@
       renderDetails();
     }
   });
+  svg.addEventListener('click', ev => {
+    // A line of an open code card: open that line in the editor.
+    const line = ev.target.closest && ev.target.closest('.cl[data-line]');
+    if (!line || window.getSelection().toString()) return;
+    const id = nodeIdFromEvent(ev);
+    const n = id && S.nodes.get(id);
+    const entry = n && S.code.get(codeKey(n));
+    if (entry && entry.file) vscode.postMessage({ type: 'open', file: entry.file, line: +line.dataset.line, side: codeSide(n), preserveFocus: false });
+  });
   svg.addEventListener('dblclick', ev => {
     const id = nodeIdFromEvent(ev);
-    if (id && !(ev.target.closest && ev.target.closest('[data-toggle]'))) {
+    if (ev.target.closest && ev.target.closest('.codecard')) return;
+    if (id && !(ev.target.closest && (ev.target.closest('[data-toggle]') || ev.target.closest('[data-code]')))) {
       if (kids(id).length) toggle(id);
       else openSource(id);
       renderDetails();
@@ -1731,6 +1927,9 @@
   svg.addEventListener(
     'wheel',
     ev => {
+      // Over a scrollable code card the wheel scrolls the code; Ctrl+wheel still zooms.
+      const card = ev.target.closest && ev.target.closest('.codecard');
+      if (card && !ev.ctrlKey && card.scrollHeight > card.clientHeight) return;
       ev.preventDefault();
       const rect = svg.getBoundingClientRect();
       if (ev.ctrlKey || Math.abs(ev.deltaY) >= Math.abs(ev.deltaX)) {
@@ -1746,21 +1945,34 @@
   );
   svg.addEventListener('pointerleave', hideTooltip);
 
+  let hoverId = null; // node under the pointer
+  let lastMove = null; // last pointer event, to redraw the tooltip when code arrives
+  let peekTimer = null;
+
   function showTooltipFor(ev) {
     const tip = $('tooltip');
+    if (ev.target.closest && ev.target.closest('.codecard')) return hideTooltip();
     const id = nodeIdFromEvent(ev);
     const eg = !id && ev.target.closest && ev.target.closest('[data-edge]');
+    lastMove = { target: ev.target, clientX: ev.clientX, clientY: ev.clientY };
+    if (id !== hoverId) {
+      hoverId = id;
+      clearTimeout(peekTimer);
+      // Fetch the code for the hover preview once the pointer rests on a node.
+      const hn = id && S.nodes.get(id);
+      if (canShowCode(hn) && !S.codeOpen.has(id)) peekTimer = setTimeout(() => hoverId === id && requestSource(hn), 250);
+    }
     let html = '';
     if (id) {
       const n = S.nodes.get(id);
       const info = KIND_INFO[n.kind] || { label: n.kind };
       html = `<b>${esc(n.name)}</b> <span class="muted">${esc(info.label)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${n.qname && n.qname !== n.name && !n.signature ? `<div class="mono">${esc(n.qname)}</div>` : ''}${
         n.file && n.kind !== 'dir' ? `<div class="muted">${esc(n.defFile || n.file)}:${n.defLine || n.line || 1}</div>` : ''
-      }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}`;
+      }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}${S.codeOpen.has(id) ? '' : peekHtml(n)}`;
     } else if (eg && S.layout) {
       const e = S.layout.vis.edges.find(x => x.key === eg.dataset.edge);
       if (e) {
-        const verb = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses' }[e.kind];
+        const verb = EDGE_VERBS[e.kind];
         html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${verb} <b>${esc(S.nodes.get(e.t).name)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
       }
     }
@@ -1777,6 +1989,8 @@
   }
   function hideTooltip() {
     $('tooltip').classList.add('hidden');
+    hoverId = null;
+    clearTimeout(peekTimer);
   }
 
   $('fit').onclick = () => fitView(true);
@@ -1872,6 +2086,10 @@
         select(p);
       }
     } else if (ev.key === 'Enter' && S.selected) openSource(S.selected);
+    else if ((ev.key === 'c' || ev.key === 'C') && !ev.ctrlKey && !ev.metaKey && S.selected) {
+      toggleCode(S.selected);
+      renderDetails();
+    }
   });
 
   let resizeTimer = null;
@@ -1893,6 +2111,9 @@
         break;
       case 'status':
         setStatus(m.text, m.busy, m.error);
+        break;
+      case 'source':
+        onSource(m);
         break;
       case 'reveal':
         reveal(m.id);
@@ -1921,5 +2142,5 @@
   vscode.postMessage({ type: 'ready' });
 
   // Exposed for tests.
-  window.__codeGraph = { S, loadGraph, reveal, toggle, trace };
+  window.__codeGraph = { S, loadGraph, reveal, toggle, toggleCode, trace, centerOn };
 })();

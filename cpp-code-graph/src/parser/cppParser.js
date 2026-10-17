@@ -869,10 +869,11 @@ class Parser {
     };
 
     if (r.body === undefined) {
-      // Free function prototypes carry little information for the graph; class
-      // member declarations are kept so out-of-line definitions can attach to them.
-      if (ctx.kind !== 'class') return;
+      // Class member declarations are kept so out-of-line definitions can attach
+      // to them. Free function prototypes are kept too; the builder links each to
+      // its definition instead of making a node (GraphBuilder.linkPrototypes).
       ent.hash = hashString(signature);
+      if (T[r.end]) ent.endLine = T[r.end].line;
       this.addEntity(ent);
       return;
     }

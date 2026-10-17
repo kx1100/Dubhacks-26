@@ -46,7 +46,7 @@ const vscode = {
     async findFiles() { return listFiles(sampleRoot).map(Uri.file); },
     fs: { readFile: async u => fs.readFileSync(u.fsPath) },
     asRelativePath: u => path.relative(sampleRoot, u.fsPath),
-    async openTextDocument(u) { const text = fs.readFileSync(u.fsPath, 'utf8'); return { getText: () => text, lineCount: text.split('\n').length }; },
+    async openTextDocument(u) { const text = fs.readFileSync(u.fsPath, 'utf8'); const lines = text.split('\n'); return { getText: () => text, lineCount: lines.length, lineAt: i => ({ text: lines[i].replace(/\r$/, '') }) }; },
     registerTextDocumentContentProvider: () => ({ dispose() {} }),
     onDidSaveTextDocument: () => ({ dispose() {} }),
     createFileSystemWatcher: () => ({ onDidCreate() {}, onDidDelete() {}, dispose() {} })
@@ -89,6 +89,16 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   const g = posted.find(m => m.type === 'graph');
   if (!g || g.graph.nodes.length < 40) throw new Error('graph not posted');
   await onMessage({ type: 'open', file: 'src/main.cpp', line: 10 });
+  // Inline code: the webview asks for a line range and gets it back.
+  await onMessage({ type: 'getSource', reqId: 1, file: 'src/main.cpp', start: 10, end: 12, side: 'target' });
+  const src = posted.find(m => m.type === 'source' && m.reqId === 1);
+  if (!src || src.error || src.startLine !== 10 || src.lines.length !== 3 || src.truncated || !src.lines[0].includes('main')) throw new Error('bad source reply ' + JSON.stringify(src));
+  await onMessage({ type: 'getSource', reqId: 2, file: 'src/main.cpp', start: 1, end: 100000, side: 'target' });
+  const big = posted.find(m => m.type === 'source' && m.reqId === 2);
+  if (!big || big.error || big.lines.length > 200 || big.startLine !== 1) throw new Error('bad capped source reply ' + JSON.stringify(big && { n: big.lines && big.lines.length, e: big.error }));
+  await onMessage({ type: 'getSource', reqId: 3, file: 'nope/missing.cpp', start: 1, end: 5, side: 'target' });
+  const missing = posted.find(m => m.type === 'source' && m.reqId === 3);
+  if (!missing || !missing.error) throw new Error('missing file should report an error');
   await onMessage({ type: 'ask', question: 'How does rendering work?', focus: null });
   const res = posted.find(m => m.type === 'aiResult');
   if (!res || res.highlight.length !== 2 || res.path.length !== 2 || !res.answer.includes('[[fn:main')) throw new Error('bad ai result ' + JSON.stringify(res));

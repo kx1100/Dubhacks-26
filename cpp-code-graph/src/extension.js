@@ -10,6 +10,8 @@ const git = require('./git');
 const { askQuestion } = require('./ai');
 
 const GIT_SCHEME = 'codegraph-git';
+const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
+const DEFAULT_SNIPPET_LINES = 30; // used when a node has no known end line
 
 /** The single Code Graph webview panel. */
 class GraphPanel {
@@ -83,6 +85,9 @@ class GraphPanel {
       case 'openDiff':
         await this.openFileDiff(m.file);
         break;
+      case 'getSource':
+        await this.sendSource(m);
+        break;
       case 'refresh':
         if (this.compare) await this.runCompare(this.compare.base, this.compare.target);
         else await this.refreshWorkspace();
@@ -123,6 +128,24 @@ class GraphPanel {
       selection: new vscode.Range(pos, pos),
       preserveFocus: !!m.preserveFocus
     });
+  }
+
+  /** Replies to a webview `getSource` request with the lines [start, end] of a file. */
+  async sendSource(m) {
+    const reply = { type: 'source', reqId: m.reqId };
+    try {
+      const uri = this.uriFor(m.file, m.side);
+      if (!uri) throw new Error('Source is not available.');
+      const doc = await vscode.workspace.openTextDocument(uri);
+      const first = Math.min(Math.max(1, m.start | 0 || 1), Math.max(1, doc.lineCount));
+      const wanted = Math.max(first, m.end | 0 || first + DEFAULT_SNIPPET_LINES - 1);
+      const last = Math.min(doc.lineCount, wanted, first + MAX_SNIPPET_LINES - 1);
+      const lines = [];
+      for (let i = first; i <= last; i++) lines.push(doc.lineAt(i - 1).text);
+      this.post({ ...reply, startLine: first, lines, truncated: wanted > last });
+    } catch (err) {
+      this.post({ ...reply, error: (err && err.message) || String(err) });
+    }
   }
 
   async openFileDiff(file) {
@@ -237,6 +260,7 @@ class GraphPanel {
   html(webview, media) {
     const nonce = crypto.randomBytes(16).toString('base64');
     const js = webview.asWebviewUri(vscode.Uri.joinPath(media, 'graph.js'));
+    const highlightJs = webview.asWebviewUri(vscode.Uri.joinPath(media, 'highlight.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(media, 'graph.css'));
     const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};`;
     return `<!DOCTYPE html>
@@ -250,6 +274,7 @@ class GraphPanel {
 </head>
 <body>
 <div id="app"></div>
+<script nonce="${nonce}" src="${highlightJs}"></script>
 <script nonce="${nonce}" src="${js}"></script>
 </body>
 </html>`;

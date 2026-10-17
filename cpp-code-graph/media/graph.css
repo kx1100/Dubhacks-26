@@ -820,3 +820,134 @@ ul.rel li {
 .answer li.num {
   list-style: decimal;
 }
+
+/* Header <-> source pairing edges */
+
+:root {
+  --e-pairs: var(--green);
+}
+.ek-pairs { --ec: var(--e-pairs); }
+.edge.ek-pairs .line { stroke-dasharray: 8 3 2 3; }
+.legend-line.ek-pairs { stroke-dasharray: 8 3 2 3; }
+
+/* Inline code cards */
+
+:root {
+  --tk-kw: #569cd6;
+  --tk-ty: #4ec9b0;
+  --tk-fn: #dcdcaa;
+  --tk-str: #ce9178;
+  --tk-num: #b5cea8;
+  --tk-cm: #6a9955;
+  --tk-pp: #c586c0;
+}
+body.vscode-light {
+  --tk-kw: #0000ff;
+  --tk-ty: #267f99;
+  --tk-fn: #795e26;
+  --tk-str: #a31515;
+  --tk-num: #098658;
+  --tk-cm: #008000;
+  --tk-pp: #af00db;
+}
+.tk-kw { color: var(--tk-kw); }
+.tk-ty { color: var(--tk-ty); }
+.tk-fn { color: var(--tk-fn); }
+.tk-str { color: var(--tk-str); }
+.tk-num { color: var(--tk-num); }
+.tk-cm { color: var(--tk-cm); font-style: italic; }
+.tk-pp { color: var(--tk-pp); }
+
+.codebtn {
+  cursor: pointer;
+}
+.codebtn rect {
+  fill: var(--btn-bg);
+  stroke: var(--border);
+}
+.codebtn text {
+  fill: var(--fg);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  text-anchor: middle;
+  font-weight: 700;
+}
+.codebtn:hover rect {
+  fill: var(--btn-hover);
+}
+.codebtn.on rect {
+  fill: var(--primary-bg);
+  stroke: var(--primary-bg);
+}
+.codebtn.on text {
+  fill: var(--primary-fg);
+}
+
+.node.has-code {
+  cursor: default;
+}
+.node.has-code .box {
+  fill: var(--vscode-editor-background, var(--bg));
+}
+.codefo {
+  overflow: hidden;
+}
+.codecard {
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  padding: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg);
+  background: var(--code-bg);
+  border-top: 1px solid var(--border);
+  tab-size: 4;
+  user-select: text;
+  cursor: text;
+}
+.codecard .cl {
+  display: flex;
+  min-height: 16px;
+  padding-right: 10px;
+  white-space: pre;
+}
+.codecard .cl[data-line] {
+  cursor: pointer;
+}
+.codecard .cl[data-line]:hover {
+  background: rgba(128, 128, 128, 0.16);
+}
+.codecard .ln {
+  flex: none;
+  min-width: 3.4em;
+  padding: 0 10px 0 8px;
+  text-align: right;
+  color: var(--muted);
+  opacity: 0.7;
+  user-select: none;
+}
+.codecard .ct {
+  flex: 1;
+}
+.codecard .note {
+  padding-left: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+.tooltip pre.peek {
+  margin: 6px 0 0;
+  padding: 4px 6px;
+  max-width: 440px;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 15px;
+  background: var(--code-bg);
+  border-radius: 3px;
+  white-space: pre;
+  text-overflow: ellipsis;
+}

@@ -17,6 +17,7 @@ function read(dir) {
   })(dir);
   return out;
 }
+const toMap = list => Object.fromEntries(list.map(s => [s.path, s.text]));
 const base = read(root);
 const g = buildGraph(base);
 // Simulated change: modify Circle::area, remove Canvas::line, add Triangle class.
@@ -31,5 +32,5 @@ const canvasH = changed.find(s => s.path.endsWith('canvas.h'));
 if (canvasH) canvasH.text = canvasH.text.replace('    void line(Point a, Point b);\n', '');
 const d = diffGraphs(g, buildGraph(changed));
 const outDir = process.argv[3] ? path.resolve(process.argv[3]) : __dirname;
-fs.writeFileSync(path.join(outDir, 'fixtures.js'), 'window.__FIXTURES = ' + JSON.stringify({ graph: g, diff: d }) + ';\n');
+fs.writeFileSync(path.join(outDir, 'fixtures.js'), 'window.__FIXTURES = ' + JSON.stringify({ graph: g, diff: d, sources: toMap(base), diffSources: toMap(changed) }) + ';\n');
 console.log('nodes', g.nodes.length, 'diff', JSON.stringify(d.stats.diff));

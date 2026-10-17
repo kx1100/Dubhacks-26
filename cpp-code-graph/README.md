@@ -13,8 +13,11 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
   - **Inherits**: derived → base
   - **Overrides**: method → base method
   - **Uses type**: code → the class or enum it depends on
+  - **Header ↔ source**: the file that declares something → the file that implements it (`list.h` → `list.c`). Built from matching prototypes and out-of-line definitions, and from files that share a name.
 
   You can switch each kind on or off under **Show ▾**. Calls the extension could not resolve for certain are drawn dashed.
+- **Inline code.** Click the `</>` button on a function, method, class, enum or variable (or select it and press **C**) to open its source inside the node. The code is syntax-highlighted, the layout makes room for it, and clicking a line opens that line in the editor. Long bodies scroll inside the card. A function shows its definition; for a free function the details panel also links to its prototype in the header. In a comparison, the card shows the version on the side being viewed.
+- **Hover preview.** Resting the pointer on a node shows its signature, location and the first lines of its code.
 - **Navigation.** Zoom with the mouse wheel and pan by dragging. Search with `/`, which offers suggestions as you type. **Ctrl+click** (or **Enter**) opens a node's source. Every relationship in the details panel links to the exact call site.
 - **Details panel.** Click a node to see a plain-language summary ("A virtual member function of Circle. It calls 3 functions…"). The panel also shows the node's signature and where it is declared and defined. It lists what the node calls, what calls it, its base and derived classes, its members, and which files it depends on.
 - **Focus mode.** Selecting a node dims everything that is not connected to it.
@@ -36,6 +39,7 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
 | Expand / collapse | Double-click, the `+`/`−` button, or `→` / `←` |
 | Open source | Ctrl+click or Enter |
 | Search | `/`, then Enter / Shift+Enter to cycle |
+| Show / hide code | `</>` button, or `C` on the selected node |
 | Fit to view | `F` |
 | Clear highlight / selection | Esc |
 
@@ -80,11 +84,14 @@ The extension is plain JavaScript with no build step.
 - `src/ai.js`: Language Model API integration
 - `src/extension.js`: commands, webview panel and file watching
 - `media/graph.js`, `media/graph.css`: the webview (custom SVG renderer with a nested layered layout; no external libraries)
+- `media/highlight.js`: the small C/C++ syntax highlighter used by the inline code cards
 
 To develop and test:
 
 - **Run:** open this folder in VS Code and press **F5**. This starts an Extension Development Host on the included `sample/` project.
 - **Parser output:** `node test/dump.js <folder>` prints the graph for any folder.
 - **Extension host smoke test:** `node test/smoke.js` runs the extension host code against a mocked `vscode` API.
-- **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view.
+- **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view, or `?code=name` (repeatable) to open code cards.
+- **Highlighter test:** `node test/highlight.test.js`.
+- **Browser test:** `node test/ui.test.js` drives the harness in headless Chrome or Edge (set `CHROME` to the executable if it is not found). It covers code cards, the hover preview and the header ↔ source edges.
 - **Package:** `node scripts/package.js` builds a `.vsix` without `vsce`.

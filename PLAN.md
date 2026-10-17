@@ -2,6 +2,8 @@
 
 Each phase below is sized to be one commit.
 
+> **Status:** the working extension lives in `cpp-code-graph/` and differs from the stack below: plain JavaScript, a hand-written C/C++ parser, and a custom SVG webview, with no TypeScript, tree-sitter or Cytoscape. The phases below remain the feature roadmap. See `cpp-code-graph/README.md` for what is implemented.
+
 ## Pitch
 - Much code is now written by AI, so developers (beginners most of all) often don't understand how their own codebase is structured.
 - Existing code-to-graph tools build graphs for **AIs** to consume. This one is for **humans**.

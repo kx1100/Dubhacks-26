@@ -4,7 +4,8 @@
 //   nodes: folders, files, namespaces, classes/structs/unions, enums,
 //          functions, methods, fields and global variables (with a parent link
 //          forming the containment tree used for expand/collapse)
-//   edges: includes, calls, inherits, overrides, uses (type dependencies)
+//   edges: includes, calls, inherits, overrides, uses (type dependencies),
+//          pairs (declaring file -> file that implements it, e.g. list.h -> list.c)
 //
 // Names are resolved heuristically (no compiler), so edges that could point to
 // several targets are marked `uncertain`.
@@ -43,6 +44,7 @@ class GraphBuilder {
     this.freeByName = new Map(); // name -> [fnNode]
     this.methodsByName = new Map(); // name -> [fnNode]
     this.functionsWithBodies = []; // {node, body, params, ownerClass}
+    this.protos = []; // free function prototypes: {file, line, endLine, name, qname, sig}
   }
 
   addNode(n) {
@@ -188,6 +190,8 @@ class GraphBuilder {
             const owner = nodeOf[e.inClass];
             if (!owner) break;
             nodeOf[idx] = this.addMethod(owner, e, f.path);
+          } else if (e.isDecl) {
+            this.protos.push({ file: f.path, line: e.line, endLine: e.endLine, name: e.name, qname: e.qname, sig: e.sig });
           } else if (e.qual.length) {
             deferred.push(e);
           } else {
@@ -511,6 +515,51 @@ class GraphBuilder {
     }
   }
 
+  // Header <-> source pairing. A `pairs` edge runs from the file that declares
+  // something to the file that implements it:
+  //   - a free-function prototype -> the function it matches (recorded on the
+  //     definition as declFile/declLine/declEndLine)
+  //   - a class member declared in a header -> its out-of-line definition
+  //   - a header -> the source file with the same name, even when no
+  //     declaration was matched
+  linkPrototypes(files) {
+    const stem = p => basename(p).replace(/\.[^.]*$/, '').toLowerCase();
+    for (const proto of this.protos) {
+      let cands = (this.freeByName.get(proto.name) || []).filter(n => n.qname === proto.qname && n.sig === proto.sig && !n.declFile && n.file !== proto.file);
+      if (cands.length > 1) {
+        const same = cands.filter(n => stem(n.file) === stem(proto.file));
+        if (same.length) cands = same;
+      }
+      if (cands.length !== 1) continue;
+      const n = cands[0];
+      n.declFile = proto.file;
+      n.declLine = proto.line;
+      n.declEndLine = proto.endLine;
+      this.addEdge('file:' + proto.file, 'file:' + n.file, 'pairs', { site: { file: proto.file, line: proto.line } });
+    }
+    for (const n of this.nodes.values()) {
+      if (n.kind === 'method' && n.defFile && n.defFile !== n.file) {
+        this.addEdge('file:' + n.file, 'file:' + n.defFile, 'pairs', { site: { file: n.file, line: n.line } });
+      }
+    }
+    const isHeader = p => /\.(h|hh|hpp|hxx|h\+\+)$/i.test(p);
+    const isSource = p => /\.(c|cc|cpp|cxx|c\+\+)$/i.test(p);
+    const byStem = new Map();
+    for (const f of files) this.pushMap(byStem, stem(f.path), f.path);
+    for (const group of byStem.values()) {
+      const headers = group.filter(isHeader);
+      const sources = group.filter(isSource);
+      for (const h of headers) {
+        const local = sources.filter(s => dirname(s) === dirname(h));
+        const targets = local.length ? local : headers.length === 1 && sources.length === 1 ? sources : [];
+        for (const s of targets) {
+          const key = 'file:' + h + 'file:' + s + 'pairs';
+          if (!this.edges.has(key)) this.addEdge('file:' + h, 'file:' + s, 'pairs', { site: { file: h, line: 1 } });
+        }
+      }
+    }
+  }
+
   resolveIncludes(files) {
     const byBase = new Map();
     const paths = new Set();
@@ -571,6 +620,7 @@ class GraphBuilder {
     this.resolveOverrides();
     this.resolveCalls();
     this.resolveIncludes(files);
+    this.linkPrototypes(files);
 
     // Classes changed if any field changed too.
     const classFieldHash = new Map();

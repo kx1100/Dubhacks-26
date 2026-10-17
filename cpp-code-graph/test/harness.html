@@ -13,6 +13,20 @@
   window.acquireVsCodeApi = () => ({
     postMessage(m) {
       window.__sent.push(m);
+      if (m.type === 'getSource') {
+        // Answer like the extension host: lines [start, end] of the file, capped at 200.
+        const f = window.__FIXTURES;
+        const diff = location.search.includes('diff');
+        const text = ((m.side === 'target' && diff ? f.diffSources : f.sources) || {})[m.file];
+        setTimeout(() => {
+          if (text === undefined) return window.postMessage({ type: 'source', reqId: m.reqId, error: 'Source is not available.' }, '*');
+          const all = text.split(/\r?\n/);
+          const first = Math.max(1, m.start || 1);
+          const wanted = Math.max(first, m.end || first + 29);
+          const last = Math.min(all.length, wanted, first + 199);
+          window.postMessage({ type: 'source', reqId: m.reqId, startLine: first, lines: all.slice(first - 1, last), truncated: wanted > last }, '*');
+        }, 20);
+      }
       if (m.type === 'ready') {
         const diff = location.search.includes('diff');
         const f = window.__FIXTURES;
@@ -26,6 +40,22 @@
   });
 </script>
 <script src="fixtures.js"></script>
+<script src="../media/highlight.js"></script>
 <script src="../media/graph.js"></script>
+<script>
+  // ?code=name (repeatable) opens the inline code card of every node with that name, for screenshots.
+  const wantCode = new URLSearchParams(location.search).getAll('code');
+  if (wantCode.length) setTimeout(() => {
+    const cg = window.__codeGraph;
+    for (const name of wantCode) {
+      const n = cg.S.graph.nodes.find(x => x.name === name);
+      if (n) { cg.reveal(n.id, { center: false }); cg.toggleCode(n.id, true); }
+    }
+    // ?focus=name centers the view on that node once its code has loaded.
+    const focus = new URLSearchParams(location.search).get('focus');
+    const target = focus && cg.S.graph.nodes.find(x => x.name === focus);
+    if (target) setTimeout(() => cg.centerOn(target.id, false), 150);
+  }, 200);
+</script>
 </body>
 </html>
