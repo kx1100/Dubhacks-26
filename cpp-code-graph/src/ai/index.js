@@ -26,7 +26,7 @@ PATH: ids of the main execution path in call order joined with " -> " (or "none"
  * model supports tool calling, otherwise a single prompt with packed context.
  * @param {object} graph
  * @param {string} question
- * @param {{focusId?:string, mode?:'ask'|'investigate'|'path', readSource:(file:string)=>Promise<string|null>,
+ * @param {{focusId?:string, mode?:'ask'|'path', readSource:(file:string)=>Promise<string|null>,
  *          onText:(t:string)=>void, onStep?:(step:object)=>void, token:import('vscode').CancellationToken}} opts
  */
 async function askQuestion(graph, question, opts) {

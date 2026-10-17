@@ -250,9 +250,12 @@ class GraphPanel {
         }
       });
       if (!cts.token.isCancellationRequested) this.post({ type: 'aiResult', ...result });
+      else if (this.aiCancel === cts) this.post(cancelledResult());
     } catch (err) {
-      if (cts.token.isCancellationRequested) this.post({ type: 'aiResult', answer: '_Cancelled._', highlight: [], path: [] });
-      else this.post({ type: 'aiResult', answer: 'Error: ' + ((err && err.message) || err), highlight: [], path: [], error: true });
+      // A question replaced by a newer one reports nothing, so it can't overwrite the newer answer.
+      if (cts.token.isCancellationRequested) {
+        if (this.aiCancel === cts) this.post(cancelledResult());
+      } else this.post({ type: 'aiResult', answer: 'Error: ' + ((err && err.message) || err), highlight: [], path: [], error: true });
     } finally {
       if (this.aiCancel === cts) this.aiCancel = null;
       cts.dispose();
@@ -283,6 +286,10 @@ class GraphPanel {
 </body>
 </html>`;
   }
+}
+
+function cancelledResult() {
+  return { type: 'aiResult', answer: '_Cancelled._', highlight: [], path: [], cancelled: true };
 }
 
 function gitUri(root, rev, file) {

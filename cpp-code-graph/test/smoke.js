@@ -142,6 +142,21 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
   console.log('agent answer:', tres.answer);
 
+  // Stop during an investigation still ends with a (cancelled) result, so the panel is not left busy.
+  const stopModel = {
+    name: 'Stopper', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages) {
+      const mainRef = /(N\d+) function main/.exec(messages[0].content)[1];
+      await onMessage({ type: 'cancelAsk' });
+      return { stream: (async function* () { yield new vscode.LanguageModelToolCallPart('s1', 'get_node', { node: mainRef }); })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [stopModel];
+  posted.length = 0;
+  await onMessage({ type: 'ask', question: 'Stop me', focus: null });
+  const sres = posted.filter(m => m.type === 'aiResult');
+  if (sres.length !== 1 || !sres[0].cancelled || sres[0].answer !== '_Cancelled._') throw new Error('stop left no result ' + JSON.stringify(sres));
+
   // A model that rejects tools falls back to the single prompt.
   const fallbackModel = {
     name: 'NoTools', family: 'mock', maxInputTokens: 100000,

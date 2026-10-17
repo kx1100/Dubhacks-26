@@ -123,14 +123,13 @@ Back the important claims with evidence items whose file and line come from tool
 
 const MODE_HINTS = {
   ask: '',
-  investigate: 'Investigate thoroughly: form hypotheses, test them against the code, and say in the answer what you checked and what remains uncertain.',
   path: 'The developer wants the execution path. Start at the entry point (main, or the selected node), follow calls in the order they happen, and read the bodies to notice branches and error handling. Put the main path in `path`, in call order.'
 };
 
 /**
  * @param {{nodes:object[], edges:object[]}} graph
  * @param {string} question
- * @param {{llm:{send:Function, name?:string, maxInputTokens?:number}, mode?:'ask'|'investigate'|'path', focusId?:string,
+ * @param {{llm:{send:Function, name?:string, maxInputTokens?:number}, mode?:'ask'|'path', focusId?:string,
  *          readSource:(file:string)=>Promise<string|null>, onStep?:(step:object)=>void, token?:{isCancellationRequested:boolean},
  *          maxSteps?:number}} opts
  */

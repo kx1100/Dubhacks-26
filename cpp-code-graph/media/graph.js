@@ -59,8 +59,7 @@
   // Ask AI modes: each changes how the model investigates (see src/ai/agent.js).
   const AI_MODES = {
     ask: { label: 'Ask', desc: 'A direct answer that looks up only what it needs', placeholder: 'Ask about the code, e.g. “How are shapes drawn?”' },
-    path: { label: 'Trace path', desc: 'Reconstruct the execution path in call order, from main or the selected node', placeholder: 'What to trace, e.g. “What happens when the program starts?”' },
-    investigate: { label: 'Investigate', desc: 'A thorough, step-by-step investigation that checks its ideas against the code', placeholder: 'What to investigate, e.g. “Why does the canvas depend on the logger?”' }
+    path: { label: 'Trace path', desc: 'Reconstruct the execution path in call order, from main or the selected node', placeholder: 'What to trace, e.g. “What happens when the program starts?”' }
   };
   const STEP_GLYPHS = { search_symbols: '⌕', get_node: 'ⓘ', neighbors: '⇄', call_paths: '⤳', reach: '⇶', read_code: '‹›', grep: '≡' };
 
@@ -1712,6 +1711,7 @@
   }
 
   function renderHighlightBar() {
+    syncAiToggle();
     const el = $('hlBar');
     if (!S.highlight) {
       el.classList.add('hidden');
@@ -2137,7 +2137,7 @@
     const conf = !a.busy && a.confidence ? `<span class="pill sm conf conf-${a.confidence}" title="${esc(confTitle[a.confidence] || '')}">${esc(a.confidence)} confidence</span>` : '';
     const modeLabel = a.mode && a.mode !== 'ask' && AI_MODES[a.mode] ? `<span class="pill sm">${esc(AI_MODES[a.mode].label)}</span> ` : '';
     const hasSteps = a.steps && a.steps.length;
-    const showBtn = a.highlight && a.highlight.length ? `<button id="aiShow">Show ${a.highlight.length} nodes in graph</button>` : '<span></span>';
+    const showBtn = a.highlight && a.highlight.length ? '<button id="aiShow" class="hltoggle"></button>' : '<span></span>';
     el.innerHTML = `<div class="q">${modeLabel}${esc(a.question)}</div>
       ${hasSteps ? renderSteps(a) : ''}
       <div class="a">${a.answer ? mdLite(a.answer) : a.busy ? `<span class="muted">${hasSteps ? 'Investigating…' : 'Thinking…'}</span>` : ''}</div>
@@ -2145,7 +2145,10 @@
       ${a.busy ? '<button id="cancelAsk">Stop</button>' : ''}
       ${!a.busy && ((a.highlight && a.highlight.length) || conf) ? `<div class="askrow">${showBtn}<span class="meta">${conf}${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</span></div>` : ''}`;
     if ($('cancelAsk')) $('cancelAsk').onclick = () => vscode.postMessage({ type: 'cancelAsk' });
-    if ($('aiShow')) $('aiShow').onclick = () => applyAiHighlight(true);
+    if ($('aiShow')) {
+      $('aiShow').onclick = () => (aiHighlightOn() ? setHighlight(null) : applyAiHighlight(true));
+      syncAiToggle();
+    }
     const steps = $('aiSteps');
     if (steps) {
       steps.ontoggle = () => (a.stepsOpen = steps.open);
@@ -2164,12 +2167,29 @@
     bindLinks(el);
   }
 
+  /** Whether the graph currently shows the highlight of the latest AI answer. */
+  function aiHighlightOn() {
+    return !!(S.highlight && S.highlight.source === 'ai' && S.highlight.answer === S.ai);
+  }
+
+  /** Updates the answer's highlight toggle after anything changed the highlight. */
+  function syncAiToggle() {
+    const b = $('aiShow');
+    if (!b) return;
+    const on = aiHighlightOn();
+    const n = (S.ai.highlight || []).length;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    b.title = on ? 'Remove the highlight from the graph' : 'Highlight the nodes from this answer in the graph';
+    b.innerHTML = `<span class="sw"></span>${on ? 'Highlighted' : 'Highlight'} in graph <span class="muted">${n}</span>`;
+  }
+
   function applyAiHighlight(revealToo) {
     const a = S.ai;
     if (!a.highlight || !a.highlight.length) return;
     const ids = new Set(a.highlight.filter(id => S.nodes.has(id)));
     for (const id of a.path || []) if (S.nodes.has(id)) ids.add(id);
-    S.highlight = { ids, path: (a.path || []).filter(id => S.nodes.has(id)), label: 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question) };
+    S.highlight = { ids, path: (a.path || []).filter(id => S.nodes.has(id)), label: 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question), source: 'ai', answer: a };
     if (revealToo) revealAll(ids);
     else render();
   }
@@ -2549,6 +2569,7 @@
           answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, evidence: m.evidence, confidence: m.confidence, model: m.model
         };
         S.visited = null;
+        if (!m.error && !m.cancelled) $('question').value = '';
         renderAnswer();
         if (m.highlight && m.highlight.length) applyAiHighlight(false);
         break;

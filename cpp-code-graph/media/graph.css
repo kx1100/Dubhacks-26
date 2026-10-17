@@ -1107,3 +1107,36 @@ body.vscode-light {
 .pill.conf-high { color: var(--green); }
 .pill.conf-medium { color: var(--yellow); }
 .pill.conf-low { color: var(--orange); }
+
+.hltoggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.hltoggle .sw {
+  position: relative;
+  width: 22px;
+  height: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--muted);
+  flex: none;
+}
+.hltoggle .sw::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: left 0.12s;
+}
+.hltoggle.on .sw {
+  border-color: var(--yellow);
+  background: color-mix(in srgb, var(--yellow) 30%, transparent);
+}
+.hltoggle.on .sw::after {
+  left: 11px;
+  background: var(--yellow);
+}

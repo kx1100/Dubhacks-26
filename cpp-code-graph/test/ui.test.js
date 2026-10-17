@@ -168,7 +168,7 @@ async function main() {
     await open('?ai');
     await evaluate("document.querySelector('.tabs [data-tab=\"ai\"]').click(); true");
     const modes = await evaluate("[...document.querySelectorAll('#aiModes button')].map(b => b.dataset.aiMode + (b.classList.contains('active') ? '*' : ''))");
-    assert.deepStrictEqual(modes, ['ask*', 'path', 'investigate']);
+    assert.deepStrictEqual(modes, ['ask*', 'path']);
     await evaluate("document.querySelector('[data-ai-mode=\"path\"]').click(); true");
     assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
     assert.match(await evaluate("document.getElementById('question').placeholder"), /What to trace/);
@@ -205,6 +205,25 @@ async function main() {
     assert.strictEqual(done.mode, 'Trace path');
     assert.strictEqual(done.path, 4, 'answer path is numbered in the graph');
     assert.match(done.summary, /Investigation\s+3 steps/);
+    // The question box is cleared once the answer arrives.
+    assert.strictEqual(await evaluate("document.getElementById('question').value"), '');
+    // The answer's highlight can be switched off and on again, and stays in sync with the banner.
+    const toggle = () => evaluate(`JSON.stringify({ on: document.getElementById('aiShow').getAttribute('aria-pressed'), text: document.getElementById('aiShow').textContent, hl: !!cg.S.highlight, path: cg.S.highlight ? cg.S.highlight.path.length : 0 })`).then(JSON.parse);
+    let t = await toggle();
+    assert.deepStrictEqual([t.on, t.hl, t.path], ['true', true, 4]);
+    assert.match(t.text, /Highlighted in graph\s*4/);
+    await evaluate("document.getElementById('aiShow').click(); true");
+    t = await toggle();
+    assert.deepStrictEqual([t.on, t.hl], ['false', false]);
+    assert.match(t.text, /^Highlight in graph/);
+    await evaluate("document.getElementById('aiShow').click(); true");
+    t = await toggle();
+    assert.deepStrictEqual([t.on, t.hl, t.path], ['true', true, 4]);
+    await evaluate("document.getElementById('hlClear').click(); true");
+    t = await toggle();
+    assert.deepStrictEqual([t.on, t.hl], ['false', false], 'closing the banner turns the toggle off');
+    await evaluate("document.getElementById('aiShow').click(); true");
+    assert.strictEqual((await toggle()).on, 'true');
     // Hovering a step marks its nodes; clicking it highlights them.
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseenter')); true");
     assert(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length > 0"), 'hover marks the step nodes');
@@ -212,6 +231,7 @@ async function main() {
     assert.strictEqual(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length"), 0);
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].click(); true");
     assert.strictEqual(await evaluate('cg.S.highlight.label'), 'Step 2: Outgoing calls of geo::Canvas::render (4)');
+    assert.strictEqual((await toggle()).on, 'false', 'a step highlight is not the answer highlight');
     assert.strictEqual(await evaluate('cg.S.highlight.ids.size'), 3);
     // Evidence links open the cited line.
     await evaluate("window.__sent.length = 0; document.querySelector('#answer .evidence a.site').click(); true");
