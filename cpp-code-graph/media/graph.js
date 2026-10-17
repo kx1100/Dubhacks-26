@@ -47,7 +47,6 @@
   const CODE_PAD = 8;
   const CODE_MIN_W = 260;
   const CODE_MAX_W = 640;
-  const PEEK_LINES = 6;
 
   const LEAF_H = 28;
   const HEADER_H = 28;
@@ -488,7 +487,6 @@
     if (m.error) S.code.set(req.key, { status: 'error', error: m.error });
     else S.code.set(req.key, { status: 'ready', lines: m.lines, html: highlighter ? highlighter.highlightLines(m.lines) : m.lines.map(l => esc(l)), startLine: m.startLine, file: codeRange(n).file, truncated: !!m.truncated });
     if (S.codeOpen.has(req.id)) relayoutKeeping(req.id);
-    if (hoverId === req.id && lastMove) showTooltipFor(lastMove);
   }
 
   function refreshCode() {
@@ -549,12 +547,6 @@
     return `<div class="codecard">${rows}${more}</div>`;
   }
 
-  function peekHtml(n) {
-    const e = S.code.get(codeKey(n));
-    if (!e || e.status !== 'ready') return '';
-    const cut = e.html.slice(0, PEEK_LINES);
-    return `<pre class="peek">${cut.join('\n')}${e.html.length > cut.length ? '\n…' : ''}</pre>`;
-  }
 
   function computeLayout(vis) {
     const box = new Map(); // id -> {w, h, x, y (relative to parent content), container}
@@ -1945,30 +1937,18 @@
   );
   svg.addEventListener('pointerleave', hideTooltip);
 
-  let hoverId = null; // node under the pointer
-  let lastMove = null; // last pointer event, to redraw the tooltip when code arrives
-  let peekTimer = null;
-
   function showTooltipFor(ev) {
     const tip = $('tooltip');
     if (ev.target.closest && ev.target.closest('.codecard')) return hideTooltip();
     const id = nodeIdFromEvent(ev);
     const eg = !id && ev.target.closest && ev.target.closest('[data-edge]');
-    lastMove = { target: ev.target, clientX: ev.clientX, clientY: ev.clientY };
-    if (id !== hoverId) {
-      hoverId = id;
-      clearTimeout(peekTimer);
-      // Fetch the code for the hover preview once the pointer rests on a node.
-      const hn = id && S.nodes.get(id);
-      if (canShowCode(hn) && !S.codeOpen.has(id)) peekTimer = setTimeout(() => hoverId === id && requestSource(hn), 250);
-    }
     let html = '';
     if (id) {
       const n = S.nodes.get(id);
       const info = KIND_INFO[n.kind] || { label: n.kind };
       html = `<b>${esc(n.name)}</b> <span class="muted">${esc(info.label)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${n.qname && n.qname !== n.name && !n.signature ? `<div class="mono">${esc(n.qname)}</div>` : ''}${
         n.file && n.kind !== 'dir' ? `<div class="muted">${esc(n.defFile || n.file)}:${n.defLine || n.line || 1}</div>` : ''
-      }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}${S.codeOpen.has(id) ? '' : peekHtml(n)}`;
+      }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}`;
     } else if (eg && S.layout) {
       const e = S.layout.vis.edges.find(x => x.key === eg.dataset.edge);
       if (e) {
@@ -1989,8 +1969,6 @@
   }
   function hideTooltip() {
     $('tooltip').classList.add('hidden');
-    hoverId = null;
-    clearTimeout(peekTimer);
   }
 
   $('fit').onclick = () => fitView(true);

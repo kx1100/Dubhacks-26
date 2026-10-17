@@ -1,6 +1,6 @@
 // Drives the webview harness in headless Chrome over the DevTools protocol.
 //   node test/ui.test.js            (set CHROME to the browser executable if it is not found)
-// Checks inline code cards, the hover preview and the header <-> source edges.
+// Checks inline code cards and the header <-> source edges.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -111,12 +111,6 @@ async function main() {
     // 7. Hide again.
     await evaluate(`cg.toggleCode(nodeByName('log_init').id, false); true`);
     assert.strictEqual(await evaluate(`!!document.querySelector('[data-id="' + CSS.escape(nodeByName('log_init').id) + '"] .codecard')`), false);
-
-    // 8. Hovering a node shows a code preview in the tooltip.
-    await evaluate(`cg.reveal(nodeByName('log_close').id, { center: false }); true`);
-    await evaluate(`(() => { const g = document.querySelector('[data-id="' + CSS.escape(nodeByName('log_close').id) + '"]'); const r = g.getBoundingClientRect(); fire(g.querySelector('.box'), 'pointermove', { clientX: r.left + 10, clientY: r.top + 10 }); })()`);
-    assert(await evaluate(`waitFor(() => !!document.querySelector('#tooltip pre.peek'), 3000)`), 'hover preview appears');
-    assert((await evaluate(`document.querySelector('#tooltip pre.peek').textContent`)).includes('log_close'));
 
     console.log('ui: ok');
     ws.close();
