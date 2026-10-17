@@ -39,11 +39,20 @@
     setState() {}
   });
 </script>
-<script src="fixtures.js"></script>
+<script>
+  // ?large loads a bigger generated project (see test/gen-large.js).
+  document.write('<script src="' + (location.search.includes('large') ? 'fixtures-large.js' : 'fixtures.js') + '"><\/script>');
+</script>
 <script src="../media/highlight.js"></script>
 <script src="../media/graph.js"></script>
 <script>
   // ?code=name (repeatable) opens the inline code card of every node with that name, for screenshots.
+  // ?preset=calls|includes|inheritance|structure and ?arrows=selected|bundled|all pick a view.
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('preset') || qs.get('arrows')) setTimeout(() => {
+    if (qs.get('preset')) window.__codeGraph.applyPreset(qs.get('preset'));
+    if (qs.get('arrows')) window.__codeGraph.setEdgeMode(qs.get('arrows'));
+  }, 100);
   const wantCode = new URLSearchParams(location.search).getAll('code');
   if (wantCode.length) setTimeout(() => {
     const cg = window.__codeGraph;

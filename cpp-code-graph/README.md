@@ -19,6 +19,15 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
 - **Inline code.** Click the `</>` button on a function, method, class, enum or variable (or select it and press **C**) to open its source inside the node. The code is syntax-highlighted, the layout makes room for it, and clicking a line opens that line in the editor. Long bodies scroll inside the card. A function shows its definition; for a free function the details panel also links to its prototype in the header. In a comparison, the card shows the version on the side being viewed.
 - **Navigation.** Zoom with the mouse wheel and pan by dragging. Search with `/`, which offers suggestions as you type. **Ctrl+click** (or **Enter**) opens a node's source. Every relationship in the details panel links to the exact call site.
 - **Details panel.** Click a node to see a plain-language summary ("A virtual member function of Circle. It calls 3 functions…"). The panel also shows the node's signature and where it is declared and defined. It lists what the node calls, what calls it, its base and derived classes, its members, and which files it depends on.
+- **Views.** The **View** buttons in the toolbar pick a layout built around one question:
+  - **Structure** (the default): folders, files and classes, with arrows only for the node you select.
+  - **Includes**: which files include which, and which header goes with which source file.
+  - **Calls**: who calls whom, flowing left to right between folders and files.
+  - **Inheritance**: class hierarchy and overridden methods.
+
+  Changing a filter under **Show ▾** switches the view to **Custom**.
+- **Arrows.** The **Arrows** buttons control how many arrows are drawn: **Selected** (only the selected node's), **Bundled** (one arrow per pair of folders or files with a count, plus the selected node's own arrows) or **All**. In Bundled mode an arrow that is too long to follow becomes two short stubs with labels such as `ui ×18 →`; click a label to jump to the other end.
+- **Collapse others.** Select a node and press **O** (or use the button in the details panel) to close everything except that node, what it is connected to, and the folders and files leading to them.
 - **Focus mode.** Selecting a node dims everything that is not connected to it.
 - **Trace callers / callees.** Highlights everything a function reaches, directly or indirectly, or everything that leads to it.
 - **Show in Code Graph.** Right-click inside a C/C++ editor to jump to the function or class under the cursor.
@@ -39,6 +48,7 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
 | Open source | Ctrl+click or Enter |
 | Search | `/`, then Enter / Shift+Enter to cycle |
 | Show / hide code | `</>` button, or `C` on the selected node |
+| Collapse others | `O` on the selected node |
 | Fit to view | `F` |
 | Clear highlight / selection | Esc |
 
@@ -90,7 +100,8 @@ To develop and test:
 - **Run:** open this folder in VS Code and press **F5**. This starts an Extension Development Host on the included `sample/` project.
 - **Parser output:** `node test/dump.js <folder>` prints the graph for any folder.
 - **Extension host smoke test:** `node test/smoke.js` runs the extension host code against a mocked `vscode` API.
-- **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view, or `?code=name` (repeatable) to open code cards.
+- **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view, `?code=name` (repeatable) to open code cards, `?preset=calls` (or `includes`, `inheritance`, `structure`) and `?arrows=all` (or `bundled`, `selected`) to pick a view, and `?large` to load a generated 80-file project (see below).
+- **Large project:** `node test/gen-large.js <dir> [modules]` writes a synthetic C project for trying big graphs. `node test/make-fixtures.js <dir> test` then writes `test/fixtures.js`; the browser test builds `test/fixtures-large.js` itself when it needs it.
 - **Highlighter test:** `node test/highlight.test.js`.
-- **Browser test:** `node test/ui.test.js` drives the harness in headless Chrome or Edge (set `CHROME` to the executable if it is not found). It covers code cards and the header ↔ source edges.
+- **Browser test:** `node test/ui.test.js` drives the harness in headless Chrome or Edge (set `CHROME` to the executable if it is not found). It covers code cards, the header ↔ source edges, the views and arrow modes, bundling, left-to-right layout, long-arrow labels and Collapse others.
 - **Package:** `node scripts/package.js` builds a `.vsix` without `vsce`.

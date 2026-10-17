@@ -51,20 +51,23 @@ async function main() {
     };
 
     await send('Page.enable');
-    await send('Page.navigate', { url: `http://127.0.0.1:${HTTP_PORT}/test/harness.html` });
-    for (let i = 0; i < 50; i++) {
-      if (await evaluate('!!(window.__codeGraph && window.__codeGraph.S.graph)').catch(() => false)) break;
-      await sleep(100);
-    }
-
-    // Helpers run inside the page.
-    await evaluate(`
+    // Loads the harness (optionally with a query string) and defines helpers inside the page.
+    const open = async query => {
+      await send('Page.navigate', { url: `http://127.0.0.1:${HTTP_PORT}/test/harness.html${query || ''}` });
+      await sleep(150);
+      for (let i = 0; i < 80; i++) {
+        if (await evaluate('!!(window.__codeGraph && window.__codeGraph.S.graph && document.querySelector("#layerNodes .node"))').catch(() => false)) break;
+        await sleep(100);
+      }
+      await evaluate(`
       window.cg = window.__codeGraph;
       window.nodeByName = name => cg.S.graph.nodes.find(n => n.name === name);
       window.fire = (el, type, extra) => el.dispatchEvent(new PointerEvent(type, Object.assign({ bubbles: true, cancelable: true, button: 0, pointerId: 1 }, extra)));
       window.click = el => { fire(el, 'pointerdown'); fire(el, 'pointerup'); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); };
       window.waitFor = async (fn, ms = 2000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await new Promise(r => setTimeout(r, 30)); } return false; };
       true`);
+    };
+    await open('');
 
     // 1. Pairing edges exist in the data and are on by default.
     const pairs = await evaluate(`cg.S.graph.edges.filter(e => e.kind === 'pairs').map(e => e.s.replace('file:', '') + '>' + e.t.replace('file:', '') + ':' + e.n)`);
@@ -112,6 +115,54 @@ async function main() {
     await evaluate(`cg.toggleCode(nodeByName('log_init').id, false); true`);
     assert.strictEqual(await evaluate(`!!document.querySelector('[data-id="' + CSS.escape(nodeByName('log_init').id) + '"] .codecard')`), false);
 
+    // 8. Default view: Structure, arrows only for the selection.
+    await open('');
+    assert.strictEqual(await evaluate('cg.S.preset'), 'structure');
+    assert.strictEqual(await evaluate('cg.S.edgeMode'), 'selected');
+    assert.strictEqual(await evaluate("document.querySelectorAll('#layerEdges .edge').length"), 0, 'no arrows without a selection');
+    assert.strictEqual(await evaluate("!document.getElementById('edgeHint').classList.contains('hidden')"), true, 'hint shown');
+    await evaluate(`cg.reveal(nodeByName('log_init').id, { center: false }); true`);
+    const selected = JSON.parse(await evaluate(`JSON.stringify({ n: document.querySelectorAll('#layerEdges .edge').length, rel: document.querySelectorAll('#layerEdges .edge.related').length })`));
+    assert(selected.n > 0 && selected.n === selected.rel, 'only arrows of the selection are drawn: ' + JSON.stringify(selected));
+    await evaluate("cg.setEdgeMode('all'); true");
+    const all = await evaluate("document.querySelectorAll('#layerEdges .edge').length");
+    assert(all > selected.n, 'All shows more arrows than Selected');
+
+    // 9. Collapse others keeps only the neighbourhood of the node open.
+    await evaluate(`cg.focusArea(nodeByName('log_init').id); true`);
+    assert.strictEqual(await evaluate("cg.S.expanded.has('file:src/main.cpp')"), true, 'the file of the caller stays open');
+    assert.strictEqual(await evaluate("cg.S.expanded.has('file:src/shape.cpp')"), false, 'unrelated files are collapsed');
+
+    // 10. Calls view: left to right, bundled arrows whose counts add up.
+    await open('?preset=calls');
+    assert(await evaluate("waitFor(() => cg.S.preset === 'calls' && document.querySelectorAll('#layerEdges .edge.bundle').length > 0, 5000)"), 'calls view applied');
+    const calls = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const L = cg.S.layout; const abs = L.abs;
+      return { dir: cg.S.direction, mode: cg.S.edgeMode, srcX: abs.get('dir:src').x, cX: abs.get('dir:c').x,
+        bundleSumOk: L.vis.bundles.every(b => b.count === b.members.reduce((n, m) => n + m.count, 0) && b.members.length > 1),
+        bundles: L.vis.bundles.length, bundleEls: document.querySelectorAll('#layerEdges .edge.bundle').length };
+    })())`));
+    assert.strictEqual(calls.dir, 'LR');
+    assert.strictEqual(calls.mode, 'bundled');
+    assert(calls.srcX < calls.cX, 'callers (src) are left of callees (c): ' + JSON.stringify(calls));
+    assert(calls.bundles > 0 && calls.bundleEls >= calls.bundles && calls.bundleSumOk, 'bundles drawn and consistent: ' + JSON.stringify(calls));
+    await evaluate("cg.applyPreset('structure'); true");
+    assert.strictEqual(await evaluate('cg.S.direction'), 'TB');
+    await evaluate("cg.applyPreset('includes'); true");
+    assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify(Object.keys(cg.S.edgeOn).filter(k => cg.S.edgeOn[k]).sort())")), ['includes', 'pairs']);
+
+    // 11. A hand-made filter change marks the view as Custom.
+    await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"uses\"]').click(); true");
+    assert.strictEqual(await evaluate('cg.S.preset'), 'custom');
+
+    // 12. On a bigger project long arrows become labelled stubs that jump to the other end.
+    ensureLargeFixture();
+    await open('?large&preset=calls');
+    // The harness applies ?preset after load, so wait for the result.
+    assert(await evaluate("waitFor(() => document.querySelectorAll('#layerBadges .badge').length > 0, 5000)"), 'long arrows are drawn as stubs with labels');
+    await evaluate(`(() => { const b = document.querySelector('#layerBadges .badge'); window.__badgeTarget = b.dataset.badge; click(b); })()`);
+    assert.strictEqual(await evaluate('cg.S.selected'), await evaluate('window.__badgeTarget'), 'clicking a label selects the node it names');
+
     console.log('ui: ok');
     ws.close();
   } finally {
@@ -119,6 +170,18 @@ async function main() {
     server.kill();
     setTimeout(() => fs.rmSync(profile, { recursive: true, force: true }), 500);
   }
+}
+
+// The big fixture is generated (test/gen-large.js); create it when it is missing.
+function ensureLargeFixture() {
+  const target = path.join(__dirname, 'fixtures-large.js');
+  if (fs.existsSync(target)) return;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-large-'));
+  const run = (...args) => require('child_process').execFileSync(process.execPath, args, { stdio: 'ignore' });
+  run(path.join(__dirname, 'gen-large.js'), path.join(tmp, 'proj'), '40');
+  run(path.join(__dirname, 'make-fixtures.js'), path.join(tmp, 'proj'), tmp);
+  fs.copyFileSync(path.join(tmp, 'fixtures.js'), target);
+  fs.rmSync(tmp, { recursive: true, force: true });
 }
 
 function pick(obj, keys) {

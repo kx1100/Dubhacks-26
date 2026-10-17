@@ -48,6 +48,29 @@
   const CODE_MIN_W = 260;
   const CODE_MAX_W = 640;
 
+  // Which arrows are drawn: only those touching the selection, edges bundled
+  // between containers (plus the selection's own), or every edge.
+  const EDGE_MODES = ['selected', 'bundled', 'all'];
+  const EDGE_MODE_INFO = {
+    selected: 'Only the arrows connected to the selected node',
+    bundled: 'One arrow per pair of containers, plus the selected node\'s own arrows',
+    all: 'Every arrow'
+  };
+  // View presets: each answers one question and sets arrows, filters and depth.
+  //   edges      relationship kinds to draw
+  //   fields     show fields and global variables
+  //   namespaces show namespace boxes
+  //   expand     node kinds opened at the start (null = default depth)
+  //   budget     roughly how many nodes may be visible after opening
+  const PRESETS = {
+    structure: { label: 'Structure', desc: 'The map of the code: folders, files and classes. Select a node to see how it connects.', edges: ['calls', 'inherits', 'overrides', 'includes', 'pairs'], fields: true, namespaces: true, mode: 'selected', direction: 'TB', expand: null },
+    includes: { label: 'Includes', desc: 'Which files include which, and which header goes with which source file.', edges: ['includes', 'pairs'], fields: false, namespaces: false, mode: 'all', direction: 'TB', expand: ['dir'], budget: 400 },
+    calls: { label: 'Calls', desc: 'Who calls whom, left to right.', edges: ['calls', 'overrides'], fields: false, namespaces: false, mode: 'bundled', direction: 'LR', expand: ['dir', 'file', 'namespace', 'class', 'struct', 'union'], budget: 140 },
+    inheritance: { label: 'Inheritance', desc: 'Class hierarchy: who derives from whom and which methods override.', edges: ['inherits', 'overrides'], fields: false, namespaces: false, mode: 'all', direction: 'TB', expand: ['dir', 'file', 'namespace'], budget: 400 }
+  };
+
+  const LONG_EDGE = 520; // arrows longer than this (in bundled mode) become stubs with labels
+
   const LEAF_H = 28;
   const HEADER_H = 28;
   const PAD = 14;
@@ -82,6 +105,9 @@
     showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,
     changesOnly: true,
     focusMode: saved.focusMode !== undefined ? saved.focusMode : true,
+    preset: PRESETS[saved.preset] || saved.preset === 'custom' ? saved.preset : 'structure', // which view preset is active
+    edgeMode: EDGE_MODES.includes(saved.edgeMode) ? saved.edgeMode : 'selected', // which arrows are drawn
+    direction: saved.direction === 'LR' ? 'LR' : 'TB', // layout direction
     view: saved.view || null, // {x, y, k}
     highlight: null, // {ids:Set, path:[], label}
     search: { q: '', matches: [], index: -1 },
@@ -117,6 +143,8 @@
     <div class="group">
       <label class="toggle" title="Dim everything not connected to the selection"><input type="checkbox" id="focusMode"> Focus</label>
     </div>
+    <div class="group seg" id="presetSeg" role="group" aria-label="View"><span class="seglabel">View</span></div>
+    <div class="group seg" id="edgeSeg" role="group" aria-label="Arrows"><span class="seglabel">Arrows</span></div>
     <div class="spacer"></div>
     <div class="group">
       <button id="compareBtn" title="Compare two git commits">Compare commits</button>
@@ -133,9 +161,11 @@
           <g id="layerEdges"></g>
           <g id="layerPath"></g>
           <g id="layerNodes"></g>
+          <g id="layerBadges"></g>
         </g>
       </svg>
       <div id="hlBar" class="hlbar hidden"></div>
+      <div id="edgeHint" class="edgehint hidden">Select a node to see its connections, or choose <b>Bundled</b> / <b>All</b> under Arrows.</div>
       <div id="empty" class="empty hidden"></div>
       <div class="zoom">
         <button id="zoomIn" title="Zoom in">+</button>
@@ -190,6 +220,9 @@
       showNamespaces: S.showNamespaces,
       showUncertain: S.showUncertain,
       focusMode: S.focusMode,
+      preset: S.preset,
+      edgeMode: S.edgeMode,
+      direction: S.direction,
       view: S.view,
       mode: S.mode
     });
@@ -231,10 +264,12 @@
     if (!restore && !firstLoad && !modeChanged) {
       // refresh: keep everything
     }
+    if (modeChanged && !restore) applyPresetSettings(S.preset);
     rebuildTree();
-    if (modeChanged && !restore) initialExpansion();
+    if (modeChanged && !restore) presetExpansion(S.preset);
     renderBanner();
     renderFilters();
+    renderViewControls();
     renderStats();
     layoutAndRender(modeChanged && !restore ? 'fit' : S.view ? null : 'fit');
     renderDetails();
@@ -354,6 +389,14 @@
       for (const n of changed) for (const a of ancestors(n.id)) if (S.nodes.get(a).kind === 'dir') S.expanded.add(a);
       return;
     }
+    openLevels(['dir', 'file', 'namespace'], INITIAL_BUDGET);
+    // A single root folder is always worth opening.
+    if (S.roots.length === 1) S.expanded.add(S.roots[0]);
+  }
+
+  function openLevels(kinds, budget) {
+    // Open nodes of the given kinds level by level while the visible count stays within budget.
+    const open = new Set(kinds);
     let visible = S.roots.length;
     let level = S.roots.slice();
     while (level.length) {
@@ -361,16 +404,85 @@
       for (const id of level) {
         const n = S.nodes.get(id);
         const c = kids(id);
-        if (!c.length || !(n.kind === 'dir' || n.kind === 'file' || n.kind === 'namespace')) continue;
-        if (visible + c.length > INITIAL_BUDGET) continue;
+        if (!c.length || !open.has(n.kind)) continue;
+        if (visible + c.length > budget) continue;
         S.expanded.add(id);
         visible += c.length;
         next.push(...c);
       }
       level = next;
     }
-    // A single root folder is always worth opening.
+  }
+
+  // ---------------------------------------------------------------------------
+  // View presets
+
+  function applyPresetSettings(name) {
+    const p = PRESETS[name];
+    if (!p) return;
+    const on = new Set(p.edges);
+    S.edgeOn = Object.fromEntries(EDGE_KINDS.map(k => [k.kind, on.has(k.kind)]));
+    S.showFields = p.fields;
+    S.showNamespaces = p.namespaces;
+    S.edgeMode = p.mode;
+    S.direction = p.direction;
+  }
+
+  function presetExpansion(name) {
+    const p = PRESETS[name];
+    if (!p || !p.expand || S.mode === 'diff') return initialExpansion();
+    S.expanded = new Set();
+    openLevels(p.expand, p.budget);
     if (S.roots.length === 1) S.expanded.add(S.roots[0]);
+  }
+
+  function applyPreset(name) {
+    if (!PRESETS[name]) return;
+    S.preset = name;
+    S.highlight = null;
+    applyPresetSettings(name);
+    for (const id of [...S.codeOpen]) S.codeOpen.delete(id);
+    rebuildTree();
+    presetExpansion(name);
+    persist();
+    renderFilters();
+    renderViewControls();
+    layoutAndRender('fit');
+    setStatus(PRESETS[name].desc);
+  }
+
+  function markCustom() {
+    // Changing a filter by hand means the view no longer matches its preset.
+    if (S.preset === 'custom') return;
+    S.preset = 'custom';
+    renderViewControls();
+  }
+
+  function setEdgeMode(mode) {
+    if (!EDGE_MODES.includes(mode)) return;
+    S.edgeMode = mode;
+    persist();
+    renderViewControls();
+    render();
+  }
+
+  function renderViewControls() {
+    const seg = (el, items, current, attr) => {
+      for (const b of [...el.querySelectorAll('button')]) b.remove();
+      for (const [value, label, title] of items) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.title = title;
+        b.dataset[attr] = value;
+        b.setAttribute('aria-pressed', String(value === current));
+        b.classList.toggle('active', value === current);
+        el.appendChild(b);
+      }
+    };
+    seg($('presetSeg'), Object.entries(PRESETS).map(([k, p]) => [k, p.label, p.desc]).concat(S.preset === 'custom' ? [['custom', 'Custom', 'Filters changed by hand under Show']] : []), S.preset, 'preset');
+    seg($('edgeSeg'), EDGE_MODES.map(m => [m, m[0].toUpperCase() + m.slice(1), EDGE_MODE_INFO[m]]), S.edgeMode, 'edgemode');
+    $('presetSeg').querySelectorAll('button').forEach(b => (b.onclick = () => (b.dataset.preset === 'custom' ? null : applyPreset(b.dataset.preset))));
+    $('edgeSeg').querySelectorAll('button').forEach(b => (b.onclick = () => setEdgeMode(b.dataset.edgemode)));
   }
 
   // ---------------------------------------------------------------------------
@@ -424,7 +536,60 @@
       e.status = e.statuses.size === 1 ? [...e.statuses][0] : 'mixed';
       if (e.status === 'same') e.status = null;
     }
-    return { visible, rep, repOf, edges };
+    return { visible, rep, repOf, edges, bundles: bundleEdges(edges) };
+  }
+
+  /**
+   * Groups edges that run between nested nodes of two different containers into
+   * one bundle per (container, container, kind). An edge between siblings is
+   * drawn as is, so it is left out. Each edge gets `bundleKey` (or null).
+   * A bundle looks like an edge (s, t, kind, count, raw ...) so the details
+   * panel and tooltips can treat both the same way.
+   */
+  function bundleEdges(edges) {
+    const groups = new Map();
+    for (const e of edges) {
+      e.bundleKey = null;
+      const pa = ancestors(e.s).concat([e.s]);
+      const pb = ancestors(e.t).concat([e.t]);
+      let i = 0;
+      while (i < pa.length && i < pb.length && pa[i] === pb[i]) i++;
+      if (i >= pa.length || i >= pb.length) continue;
+      const cs = pa[i];
+      const ct = pb[i];
+      if (cs === e.s && ct === e.t) continue; // siblings: nothing to bundle
+      const key = 'bundle' + '\u0001' + cs + '\u0001' + ct + '\u0001' + e.kind;
+      let b = groups.get(key);
+      if (!b) {
+        b = { key, s: cs, t: ct, kind: e.kind, count: 0, raw: [], members: [], uncertain: true, statuses: new Set(), bundle: true };
+        groups.set(key, b);
+      }
+      b.count += e.count;
+      b.raw.push(...e.raw);
+      b.members.push(e);
+      if (!e.uncertain) b.uncertain = false;
+      b.statuses.add(e.status || 'same');
+      e.bundleKey = key;
+    }
+    const bundles = [];
+    for (const b of groups.values()) {
+      // A bundle of one edge is just that edge.
+      if (b.members.length === 1) {
+        b.members[0].bundleKey = null;
+        continue;
+      }
+      b.status = b.statuses.size === 1 ? [...b.statuses][0] : 'mixed';
+      if (b.status === 'same') b.status = null;
+      bundles.push(b);
+    }
+    return bundles;
+  }
+
+  function findEdge(key) {
+    // An edge or a bundle of the current layout by its key.
+    const vis = S.layout && S.layout.vis;
+    if (!vis) return null;
+    return vis.edges.find(x => x.key === key) || vis.bundles.find(x => x.key === key) || null;
   }
 
   // ---------------------------------------------------------------------------
@@ -609,6 +774,35 @@
   }
 
   function layered(ids, pairs, box) {
+    // Left to right is the top-down layout run on boxes turned on their side:
+    // ranks become columns and siblings stack vertically. It is used between
+    // folders and files, where the flow of calls matters; inside a file the
+    // functions stay top-down, otherwise long call chains make boxes very wide.
+    if (!sidewaysAmong(ids)) return layeredTopDown(ids, pairs, box);
+    const turned = new Map();
+    for (const id of ids) {
+      const b = box.get(id);
+      turned.set(id, { w: b.h, h: b.w });
+    }
+    const res = layeredTopDown(ids, pairs, turned);
+    for (const id of ids) {
+      const b = box.get(id);
+      const t = turned.get(id);
+      b.x = t.y;
+      b.y = t.x;
+    }
+    return { w: res.h, h: res.w };
+  }
+
+  function sidewaysAmong(ids) {
+    // True when siblings are laid out left to right: a left-to-right view and all of them folders or files.
+    return S.direction === 'LR' && ids.length > 0 && ids.every(id => {
+      const k = (S.nodes.get(id) || {}).kind;
+      return k === 'dir' || k === 'file';
+    });
+  }
+
+  function layeredTopDown(ids, pairs, box) {
     // Sets box.get(id).x/y relative to the content origin; returns {w, h}.
     if (!ids.length) return { w: 0, h: 0 };
     const index = new Map(ids.map((id, i) => [id, i]));
@@ -835,7 +1029,7 @@
     return [cx + dx * s, cy + dy * s];
   }
 
-  function anchor(b, toward) {
+  function anchor(b) {
     // Containers and code cards connect at their header so arrows do not cross their content.
     if (b.container || b.code) {
       const header = { x: b.x, y: b.y, w: b.w, h: HEADER_H };
@@ -844,21 +1038,105 @@
     return { cx: b.x + b.w / 2, cy: b.y + b.h / 2, box: b };
   }
 
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /**
+   * Path of an arrow between two boxes. Arrows leave and enter through the side
+   * of a box that faces the other one (bottom to top when the target is below,
+   * right to left in a left-to-right layout) and curve smoothly between them,
+   * instead of running from centre to centre.
+   * Returns {d, x1, y1, x2, y2, mx, my, len}: path, end points, mid point and length.
+   */
   function edgeGeometry(e, abs, bend) {
     const A = abs.get(e.s);
     const B = abs.get(e.t);
     if (!A || !B) return null;
     const a = anchor(A);
     const b = anchor(B);
-    const [x1, y1] = clipToBox(a.cx, a.cy, b.cx, b.cy, a.box);
-    const [x2, y2] = clipToBox(b.cx, b.cy, a.cx, a.cy, b.box);
-    const mx = (x1 + x2) / 2;
-    const my = (y1 + y2) / 2;
-    const len = Math.hypot(x2 - x1, y2 - y1) || 1;
-    const nx = -(y2 - y1) / len;
-    const ny = (x2 - x1) / len;
-    const off = bend * Math.min(40, len / 4);
-    return { d: `M${x1.toFixed(1)},${y1.toFixed(1)} Q${(mx + nx * off).toFixed(1)},${(my + ny * off).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`, mx: mx + (nx * off) / 2, my: my + (ny * off) / 2 };
+    const dx = b.cx - a.cx;
+    const dy = b.cy - a.cy;
+    const lr = S.direction === 'LR';
+    // Which axis the arrow runs along: the layout direction, unless the boxes sit side by side the other way.
+    const gapV = Math.max(a.box.y, b.box.y) - Math.min(a.box.y + a.box.h, b.box.y + b.box.h); // > 0 when apart vertically
+    const gapH = Math.max(a.box.x, b.box.x) - Math.min(a.box.x + a.box.w, b.box.x + b.box.w); // > 0 when apart horizontally
+    const vertical = lr ? gapH <= 0 : gapV > 0 || gapH <= 0;
+    let x1, y1, x2, y2, c1x, c1y, c2x, c2y;
+    const sway = bend * 22;
+    if (vertical) {
+      const down = dy >= 0;
+      // Container boxes use their full height so arrows leave below their content, not through it.
+      const aEdgeY = down ? (A.container || A.code ? A.y + A.h : a.box.y + a.box.h) : a.box.y;
+      const bEdgeY = down ? b.box.y : B.container || B.code ? B.y + B.h : b.box.y + b.box.h;
+      x1 = clamp(b.cx, a.box.x + 12, a.box.x + a.box.w - 12);
+      x2 = clamp(a.cx, b.box.x + 12, b.box.x + b.box.w - 12);
+      // Boxes that overlap horizontally get a straight vertical arrow.
+      const lo = Math.max(a.box.x, b.box.x) + 8;
+      const hi = Math.min(a.box.x + a.box.w, b.box.x + b.box.w) - 8;
+      if (lo < hi) x1 = x2 = clamp((a.cx + b.cx) / 2, lo, hi);
+      y1 = aEdgeY;
+      y2 = bEdgeY;
+      const k = clamp(Math.abs(y2 - y1) / 2, 14, 70) * (down ? 1 : -1);
+      c1x = x1 + sway;
+      c1y = y1 + k;
+      c2x = x2 + sway;
+      c2y = y2 - k;
+    } else {
+      const right = dx >= 0;
+      x1 = right ? a.box.x + a.box.w : a.box.x;
+      x2 = right ? b.box.x : b.box.x + b.box.w;
+      y1 = clamp(b.cy, a.box.y + 8, a.box.y + a.box.h - 8);
+      y2 = clamp(a.cy, b.box.y + 8, b.box.y + b.box.h - 8);
+      const k = clamp(Math.abs(x2 - x1) / 2, 14, 90) * (right ? 1 : -1);
+      c1x = x1 + k;
+      c1y = y1 + sway;
+      c2x = x2 - k;
+      c2y = y2 + sway;
+    }
+    const f = v => v.toFixed(1);
+    const unit = (ax, ay) => {
+      const l = Math.hypot(ax, ay) || 1;
+      return [ax / l, ay / l];
+    };
+    const [ux1, uy1] = unit(c1x - x1, c1y - y1); // direction leaving the source
+    const [ux2, uy2] = unit(x2 - c2x, y2 - c2y); // direction entering the target
+    return {
+      d: `M${f(x1)},${f(y1)} C${f(c1x)},${f(c1y)} ${f(c2x)},${f(c2y)} ${f(x2)},${f(y2)}`,
+      x1, y1, x2, y2, ux1, uy1, ux2, uy2,
+      mx: (x1 + 3 * c1x + 3 * c2x + x2) / 8,
+      my: (y1 + 3 * c1y + 3 * c2y + y2) / 8,
+      len: Math.hypot(x2 - x1, y2 - y1)
+    };
+  }
+
+  /**
+   * An arrow that is too long to follow, drawn as two short stubs (one leaving the
+   * source, one entering the target), each ending in a label naming the other end.
+   * Clicking a label jumps to that end (data-badge).
+   */
+  function edgeStubs(e, g, cls, width) {
+    const STUB = 30;
+    const H = 20;
+    const name = id => nodeLabel(S.nodes.get(id) || {});
+    const times = e.count > 1 ? ' ×' + e.count : '';
+    const badge = (text, x, y, ux, uy, target, hit) => {
+      // Place the label at the far end of the stub, on the side the stub points to.
+      const w = Math.ceil(textWidth(text)) + 16;
+      const horizontal = Math.abs(ux) > Math.abs(uy);
+      const bx = horizontal ? (ux > 0 ? x : x - w) : x - w / 2;
+      const by = horizontal ? y - H / 2 : uy > 0 ? y : y - H;
+      return `<g class="badge ek-${e.kind}${e.status ? ' st-' + e.status : ''}${cls.includes('dim') ? ' dim' : ''}" data-badge="${esc(target)}"><title>Go to ${esc(name(target))}</title><rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${w}" height="${H}" rx="10"/><text x="${(bx + w / 2).toFixed(1)}" y="${(by + H / 2 + 4).toFixed(1)}">${esc(text)}</text></g>`;
+    };
+    const sx = g.x1 + g.ux1 * STUB;
+    const sy = g.y1 + g.uy1 * STUB;
+    const tx = g.x2 - g.ux2 * STUB;
+    const ty = g.y2 - g.uy2 * STUB;
+    const styleW = `style="stroke-width:${width.toFixed(2)}px"`;
+    return {
+      edges:
+        `<g class="${cls} stub" data-edge="${esc(e.key)}"><path class="hit" d="M${g.x1.toFixed(1)},${g.y1.toFixed(1)} L${sx.toFixed(1)},${sy.toFixed(1)}"/><path class="line" ${styleW} d="M${g.x1.toFixed(1)},${g.y1.toFixed(1)} L${sx.toFixed(1)},${sy.toFixed(1)}"/></g>` +
+        `<g class="${cls} stub" data-edge="${esc(e.key)}"><path class="hit" d="M${tx.toFixed(1)},${ty.toFixed(1)} L${g.x2.toFixed(1)},${g.y2.toFixed(1)}"/><path class="line" ${styleW} d="M${tx.toFixed(1)},${ty.toFixed(1)} L${g.x2.toFixed(1)},${g.y2.toFixed(1)}" marker-end="url(#arrow-${e.kind})"/></g>`,
+      badges: badge('→ ' + name(e.t) + times, sx, sy, g.ux1, g.uy1, e.t) + badge(name(e.s) + times + ' →', tx, ty, -g.ux2, -g.uy2, e.s)
+    };
   }
 
   function relatedSets() {
@@ -987,16 +1265,30 @@
       });
     }
 
-    // Edges; reciprocal pairs are bent apart.
-    const pairCount = new Map();
+    // Arrows. Which ones are drawn depends on the arrow mode (see EDGE_MODES): the
+    // selection's own arrows are always exact; in "bundled" mode the rest are
+    // merged per pair of containers.
+    const bundledMode = S.edgeMode === 'bundled';
+    const drawn = [];
     for (const e of vis.edges) {
-      const k = e.s < e.t ? e.s + '|' + e.t : e.t + '|' + e.s;
-      pairCount.set(k, (pairCount.get(k) || 0) + 1);
+      const isRel = !!(related && related.edges.has(e.key));
+      const isHl = !!(hl && hl.has(e.s) && hl.has(e.t));
+      const chosen = S.selectedEdge === e.key;
+      const show = S.edgeMode === 'all' || isRel || isHl || chosen || (bundledMode && !e.bundleKey);
+      if (show) drawn.push({ e, isRel, isHl });
     }
+    if (bundledMode) for (const b of vis.bundles) drawn.push({ e: b, isRel: false, isHl: false });
+    // Reciprocal pairs are bent apart.
+    const pairKey = e => (e.s < e.t ? e.s + '|' + e.t : e.t + '|' + e.s);
+    const pairCount = new Map();
+    for (const { e } of drawn) pairCount.set(pairKey(e), (pairCount.get(pairKey(e)) || 0) + 1);
     const pairSeen = new Map();
     let edgesSvg = '';
-    for (const e of vis.edges) {
-      const k = e.s < e.t ? e.s + '|' + e.t : e.t + '|' + e.s;
+    let badgesSvg = '';
+    // Bundles first so exact arrows are drawn on top of them.
+    drawn.sort((a, b) => (b.e.bundle ? 1 : 0) - (a.e.bundle ? 1 : 0));
+    for (const { e, isRel, isHl } of drawn) {
+      const k = pairKey(e);
       const total = pairCount.get(k);
       const idx = pairSeen.get(k) || 0;
       pairSeen.set(k, idx + 1);
@@ -1004,20 +1296,29 @@
       if (total > 1) bend = (idx - (total - 1) / 2) * 0.8 * (e.s < e.t ? 1 : -1);
       const g = edgeGeometry(e, abs, bend);
       if (!g) continue;
-      e.mid = [g.mx, g.my];
       const cls = ['edge', 'ek-' + e.kind];
+      if (e.bundle) cls.push('bundle');
       if (e.uncertain) cls.push('uncertain');
       if (e.status) cls.push('st-' + e.status);
-      const isRel = related && related.edges.has(e.key);
-      const isHl = hl && hl.has(e.s) && hl.has(e.t);
       if (isRel) cls.push('related');
       if (isHl) cls.push('hl');
       if (S.selectedEdge === e.key) cls.push('selected');
       if (dimActive && !isRel && !isHl) cls.push('dim');
       const width = Math.min(4, 1 + Math.log2(e.count));
-      edgesSvg += `<g class="${cls.join(' ')}" data-edge="${esc(e.key)}"><path class="hit" d="${g.d}"/><path class="line" d="${g.d}" style="stroke-width:${width.toFixed(2)}px" marker-end="url(#arrow-${e.kind})"/></g>`;
+      if (bundledMode && !isRel && !isHl && S.selectedEdge !== e.key && g.len > LONG_EDGE) {
+        // Too long to follow: short stubs with a label that jumps to the other end.
+        const stub = edgeStubs(e, g, cls.join(' '), width);
+        edgesSvg += stub.edges;
+        badgesSvg += stub.badges;
+        continue;
+      }
+      const label = e.bundle ? `<g class="blabel"><rect x="${(g.mx - 14).toFixed(1)}" y="${(g.my - 9).toFixed(1)}" width="28" height="18" rx="9"/><text x="${g.mx.toFixed(1)}" y="${(g.my + 4).toFixed(1)}">${e.count}</text></g>` : '';
+      edgesSvg += `<g class="${cls.join(' ')}" data-edge="${esc(e.key)}"><path class="hit" d="${g.d}"/><path class="line" d="${g.d}" style="stroke-width:${width.toFixed(2)}px" marker-end="url(#arrow-${e.kind})"/>${label}</g>`;
     }
+    $('layerBadges').innerHTML = badgesSvg;
     $('layerEdges').innerHTML = edgesSvg;
+    // In "selected" mode an empty canvas of arrows needs a hint, or it looks like there are none.
+    $('edgeHint').classList.toggle('hidden', !(S.edgeMode === 'selected' && vis.edges.length && !S.selected && !S.selectedEdge && !S.highlight));
     renderPath();
     renderHighlightBar();
   }
@@ -1223,6 +1524,37 @@
     layoutAndRender('fit');
   }
 
+  /**
+   * Collapses everything except the neighbourhood of a node: the node itself, the
+   * nodes it is connected to (through the arrows currently enabled) and the
+   * folders and files that lead to them. Lets you study one area of a big graph.
+   */
+  function focusArea(id) {
+    const target = nearestInTree(id);
+    if (!target) return;
+    const inside = [id];
+    const sub = descendantsOf(id);
+    if (sub.length <= 300) inside.push(...sub);
+    const insideSet = new Set(inside);
+    const keep = new Set([target]);
+    for (const u of inside) {
+      for (const e of S.out.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.t)) keep.add(nearestInTree(e.t));
+      for (const e of S.inc.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.s)) keep.add(nearestInTree(e.s));
+    }
+    const wasOpen = S.expanded.has(target);
+    S.expanded = new Set();
+    for (const k of keep) if (k) for (const a of ancestors(k)) S.expanded.add(a);
+    if (wasOpen) S.expanded.add(target);
+    S.codeOpen.delete(target);
+    S.selected = target;
+    S.selectedEdge = null;
+    persist();
+    layoutAndRender('fit');
+    centerOn(target, false);
+    renderDetails();
+    setStatus('Showing only what is connected to ' + nodeLabel(S.nodes.get(target)) + '. Use Expand or Collapse to change this.');
+  }
+
   function trace(id, direction) {
     // Highlight everything reachable through call edges (callees or callers).
     const seen = new Set([id]);
@@ -1308,6 +1640,7 @@
     el.querySelectorAll('[data-edge-kind]').forEach(cb => {
       cb.onchange = () => {
         S.edgeOn[cb.dataset.edgeKind] = cb.checked;
+        markCustom();
         persist();
         layoutAndRender(null);
         renderLegend();
@@ -1315,17 +1648,20 @@
     });
     $('fUncertain').onchange = ev => {
       S.showUncertain = ev.target.checked;
+      markCustom();
       persist();
       layoutAndRender(null);
     };
     $('fFields').onchange = ev => {
       S.showFields = ev.target.checked;
+      markCustom();
       persist();
       rebuildTree();
       layoutAndRender(null);
     };
     $('fNs').onchange = ev => {
       S.showNamespaces = ev.target.checked;
+      markCustom();
       persist();
       rebuildTree();
       layoutAndRender(null);
@@ -1474,7 +1810,7 @@
   function renderDetails() {
     const el = $('tab-details');
     if (S.selectedEdge && S.layout) {
-      const e = S.layout.vis.edges.find(x => x.key === S.selectedEdge);
+      const e = findEdge(S.selectedEdge);
       if (e) return renderEdgeDetails(el, e);
     }
     const n = S.selected && S.nodes.get(S.selected);
@@ -1534,6 +1870,7 @@
         ${children.length ? `<button data-act="toggle">${S.expanded.has(n.id) ? 'Collapse' : 'Expand'}</button>` : ''}
         ${isFn ? '<button data-act="callees" title="Highlight everything this function calls, directly or indirectly">Trace callees</button><button data-act="callers" title="Highlight everything that leads to this function">Trace callers</button>' : ''}
         <button data-act="center">Center</button>
+        <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
         <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
         ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
       </div>
@@ -1553,6 +1890,7 @@
         } else if (act === 'callees') trace(n.id, 'out');
         else if (act === 'callers') trace(n.id, 'in');
         else if (act === 'center') centerOn(nearestInTree(n.id) || n.id, true);
+        else if (act === 'focusArea') focusArea(n.id);
         else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
         else if (act === 'explain') {
           switchTab('ai');
@@ -1860,6 +2198,11 @@
       return;
     }
     ev = { target, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey };
+    const bd = ev.target.closest && ev.target.closest('[data-badge]');
+    if (bd) {
+      reveal(bd.dataset.badge);
+      return;
+    }
     const cb = ev.target.closest && ev.target.closest('[data-code]');
     if (cb) {
       toggleCode(cb.dataset.code);
@@ -1950,7 +2293,7 @@
         n.file && n.kind !== 'dir' ? `<div class="muted">${esc(n.defFile || n.file)}:${n.defLine || n.line || 1}</div>` : ''
       }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}`;
     } else if (eg && S.layout) {
-      const e = S.layout.vis.edges.find(x => x.key === eg.dataset.edge);
+      const e = findEdge(eg.dataset.edge);
       if (e) {
         const verb = EDGE_VERBS[e.kind];
         html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${verb} <b>${esc(S.nodes.get(e.t).name)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
@@ -2064,6 +2407,7 @@
         select(p);
       }
     } else if (ev.key === 'Enter' && S.selected) openSource(S.selected);
+    else if ((ev.key === 'o' || ev.key === 'O') && !ev.ctrlKey && !ev.metaKey && S.selected) focusArea(S.selected);
     else if ((ev.key === 'c' || ev.key === 'C') && !ev.ctrlKey && !ev.metaKey && S.selected) {
       toggleCode(S.selected);
       renderDetails();
@@ -2120,5 +2464,5 @@
   vscode.postMessage({ type: 'ready' });
 
   // Exposed for tests.
-  window.__codeGraph = { S, loadGraph, reveal, toggle, toggleCode, trace, centerOn };
+  window.__codeGraph = { S, loadGraph, reveal, toggle, toggleCode, trace, centerOn, applyPreset, setEdgeMode, focusArea };
 })();

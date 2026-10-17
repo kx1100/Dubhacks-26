@@ -937,3 +937,95 @@ body.vscode-light {
   color: var(--muted);
   font-style: italic;
 }
+
+/* View and arrow mode controls */
+
+.toolbar .seg {
+  gap: 0;
+  align-items: stretch;
+}
+.seg .seglabel {
+  display: flex;
+  align-items: center;
+  padding: 0 7px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.seg button {
+  border-radius: 0;
+  border: 1px solid var(--border);
+  margin-left: -1px;
+}
+.seg button:first-of-type {
+  border-radius: 3px 0 0 3px;
+  margin-left: 0;
+}
+.seg button:last-of-type {
+  border-radius: 0 3px 3px 0;
+}
+.seg button.active {
+  background: var(--primary-bg);
+  color: var(--primary-fg);
+  border-color: var(--primary-bg);
+  position: relative;
+}
+
+.edgehint {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 70%;
+  padding: 5px 12px;
+  border-radius: 14px;
+  background: var(--vscode-editorWidget-background, var(--panel));
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Bundled arrows and long-arrow labels */
+
+.edge.bundle .line {
+  opacity: 0.8;
+}
+.blabel rect {
+  fill: var(--bg);
+  stroke: var(--ec);
+  stroke-width: 1px;
+}
+.blabel text {
+  fill: var(--fg);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+.edge.dim .blabel {
+  opacity: 0.4;
+}
+.edge.stub .line {
+  stroke-dasharray: none;
+}
+.badge {
+  cursor: pointer;
+}
+.badge rect {
+  fill: var(--node-bg);
+  stroke: var(--ec, var(--border));
+  stroke-width: 1px;
+}
+.badge text {
+  fill: var(--fg);
+  font-size: 11px;
+  text-anchor: middle;
+}
+.badge:hover rect {
+  fill: var(--btn-hover);
+}
+.badge.dim {
+  opacity: 0.35;
+}
