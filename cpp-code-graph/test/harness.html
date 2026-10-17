@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<link rel="stylesheet" href="../media/graph.css">
+<title>Code Graph harness</title>
+</head>
+<body class="vscode-dark">
+<div id="app"></div>
+<script>
+  // Stand-in for the VS Code webview API.
+  window.__sent = [];
+  window.acquireVsCodeApi = () => ({
+    postMessage(m) {
+      window.__sent.push(m);
+      if (m.type === 'ready') {
+        const diff = location.search.includes('diff');
+        const f = window.__FIXTURES;
+        setTimeout(() => window.postMessage(diff
+          ? { type: 'graph', mode: 'diff', graph: f.diff, title: 'sample: abc123 → working tree', compare: { baseLabel: 'abc123', targetLabel: 'working tree' } }
+          : { type: 'graph', mode: 'workspace', graph: f.graph, title: 'sample' }, '*'), 10);
+      }
+    },
+    getState() { return null; },
+    setState() {}
+  });
+</script>
+<script src="fixtures.js"></script>
+<script src="../media/graph.js"></script>
+</body>
+</html>
