@@ -12,13 +12,47 @@ import { renderSuggestions, ask, renderOpts } from './ask.js';
 import { renderer } from '../renderer.js';
 import { toggleCode, toggle, reveal, openSource, trace, revealAll, switchTab } from '../main.js';
 
+// The shape and color each kind of node has in the graph (see stylesheet() in
+// media/main.js): [shape, color variable, stroke width].
+const ICON_SHAPES = {
+  rect: '<rect x="1.5" y="2.5" width="11" height="9"/>',
+  round: '<rect x="1.5" y="2.5" width="11" height="9" rx="3"/>',
+  cut: '<polygon points="4,2.5 10,2.5 12.5,5 12.5,9 10,11.5 4,11.5 1.5,9 1.5,5"/>',
+  hexagon: '<polygon points="4,2 10,2 13,7 10,12 4,12 1,7"/>',
+  tag: '<polygon points="1.5,2.5 9,2.5 12.5,7 9,11.5 1.5,11.5"/>'
+};
+const KIND_ICONS = {
+  file: ['rect', '--cg-source', 2],
+  header: ['cut', '--cg-header', 2],
+  function: ['round', '--cg-function', 1.5],
+  prototype: ['round', '--cg-function', 1.5],
+  method: ['round', '--cg-function', 1.5],
+  struct: ['rect', '--cg-type', 1.5],
+  union: ['rect', '--cg-type', 1.5],
+  class: ['rect', '--cg-type', 2.2],
+  enum: ['hexagon', '--cg-enum', 1.5],
+  typedef: ['tag', '--cg-typedef', 1.5],
+  field: ['rect', '--cg-typedef', 1],
+  variable: ['rect', '--cg-typedef', 1],
+  namespace: ['round', '--cg-muted', 1.5],
+  dir: ['rect', '--cg-muted', 1.5]
+};
+
+/** A node's kind as the graph draws it: its shape and color, dashed when it is only declared. */
+export function kindIcon(n, big) {
+  const header = n.kind === 'file' && n.fileRole === 'header';
+  const [shape, color, width] = KIND_ICONS[header ? 'header' : n.kind] || KIND_ICONS.dir;
+  const declOnly = n.kind === 'prototype' || (n.kind === 'method' && !n.defFile && !n.isPure);
+  const label = header ? 'Header file' : (KIND_INFO[n.kind] || { label: n.kind }).label;
+  return `<svg class="ki${big ? ' big' : ''}" viewBox="0 0 14 14" role="img" aria-label="${esc(label)}"><title>${esc(label)}</title><g fill="none" stroke="var(${color})" stroke-width="${width}"${declOnly ? ' stroke-dasharray="2 1.5"' : ''}>${ICON_SHAPES[shape]}</g></svg>`;
+}
+
 export function nodeChip(id, extra) {
   const n = S.nodes.get(id);
   if (!n) return `<span class="chip missing">${esc(id)}</span>`;
-  const info = KIND_INFO[n.kind] || { glyph: '?' };
   const owner = n.kind === 'method' || n.kind === 'field' ? (S.nodes.get(n.parent) || {}).label : null;
   const label = (owner ? owner + '::' : '') + n.label;
-  return `<a class="chip k-${n.kind}${n.status ? ' st-' + n.status : ''}" data-goto="${esc(id)}" title="${esc(n.qname || n.file || n.label)}"><span class="g">${info.glyph}</span>${esc(label)}${extra || ''}</a>`;
+  return `<a class="chip k-${n.kind}${n.status ? ' st-' + n.status : ''}" data-goto="${esc(id)}" title="${esc(n.qname || n.file || n.label)}">${kindIcon(n)}${esc(label)}${extra || ''}</a>`;
 }
 
 export function locLink(file, line, side, label) {
@@ -131,7 +165,7 @@ export function renderDetails() {
     if ($('semBuild')) $('semBuild').onclick = () => vscode.postMessage({ type: 'buildSemantic' });
     return;
   }
-  const info = KIND_INFO[n.kind] || { label: n.kind, glyph: '?' };
+  const info = KIND_INFO[n.kind] || { label: n.kind };
   const out = S.out.get(n.id) || [];
   const inc = S.inc.get(n.id) || [];
   const byKind = (list, k) => list.filter(e => e.kind === k);
@@ -171,7 +205,7 @@ export function renderDetails() {
   const isFn = n.kind === 'function' || n.kind === 'prototype' || n.kind === 'method';
   const status = n.status ? `<span class="pill st-${n.status}">${n.status}</span>` : '';
   el.innerHTML = `
-    <div class="dhead k-${n.kind}"><span class="g big">${info.glyph}</span><div><div class="dname">${esc(n.label)} ${status}</div><div class="muted">${esc(info.label)}${n.access ? ' · ' + esc(n.access) : ''}${n.isVirtual ? ' · virtual' : ''}${n.isStatic ? ' · static' : ''}</div></div></div>
+    <div class="dhead k-${n.kind}">${kindIcon(n, true)}<div><div class="dname">${esc(n.label)} ${status}</div><div class="muted">${esc(info.label)}${n.access ? ' · ' + esc(n.access) : ''}${n.isVirtual ? ' · virtual' : ''}${n.isStatic ? ' · static' : ''}</div></div></div>
     ${n.qname && n.qname !== n.label ? `<div class="qname">${esc(n.qname)}</div>` : ''}
     ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
     ${summaryBlock(n)}

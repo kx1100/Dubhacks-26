@@ -1,10 +1,10 @@
 // Ask AI tab: question, investigation steps, routes, evidence, answer and history.
 
 import { $ } from '../shell.js';
-import { KIND_INFO, AI_MODES, ROUTE_KINDS, STEP_GLYPHS } from '../constants.js';
+import { AI_MODES, ROUTE_KINDS, STEP_GLYPHS } from '../constants.js';
 import { esc, ago } from '../util.js';
 import { vscode, S, persist } from '../state.js';
-import { nodeChip, bindLinks } from './details.js';
+import { nodeChip, kindIcon, bindLinks } from './details.js';
 import { renderer } from '../renderer.js';
 import { hopTitle } from '../tooltip.js';
 import { trace, setHighlight, revealAll } from '../main.js';
@@ -58,8 +58,7 @@ export function renderOpts() {
   let ctx = '';
   if (n) {
     const on = S.contextOff !== n.id;
-    const info = KIND_INFO[n.kind] || { glyph: '?' };
-    ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.label} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.label} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.label)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
+    ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.label} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.label} with the question as context`)}">${kindIcon(n)}<span class="lbl">${esc(n.label)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
   }
   const count = (S.history || []).length;
   const hist = count ? `<button id="historyBtn" class="iconbtn" aria-expanded="${!!S.historyOpen}" title="Recent questions">⟲ ${count}</button>` : '';

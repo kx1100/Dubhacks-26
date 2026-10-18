@@ -166,12 +166,19 @@ body.vscode-light {
     color: var(--muted);
   }
 
-  .chip .g {
-    display: inline-block;
-    font-weight: 700;
-    margin-right: 3px;
-    width: 1em;
-    text-align: center;
+  /* A node's kind, drawn as the graph draws it (kindIcon in panels/details.js) */
+  .ki {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    margin-right: 5px;
+    vertical-align: -2px;
+    overflow: visible;
+  }
+  .ki.big {
+    width: 22px;
+    height: 22px;
+    margin-right: 0;
   }
 
   /* Side panel content */
@@ -190,12 +197,9 @@ body.vscode-light {
     align-items: center;
     margin-bottom: 6px;
   }
-  .dhead .g.big {
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--kc);
+  .dhead .ki.big {
     width: 28px;
-    text-align: center;
+    padding: 0 3px;
   }
   .dname {
     font-size: 15px;
@@ -277,9 +281,6 @@ body.vscode-light {
     padding: 0 3px;
     word-break: break-all;
   }
-  .chip .g {
-    color: var(--kc);
-  }
   .chip:hover {
     background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
   }
@@ -351,9 +352,8 @@ body.vscode-light {
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .opt .g {
-    font-weight: 700;
-    color: var(--kc);
+  .opt .ki {
+    margin-right: 0;
   }
   .opt .x {
     opacity: 0.6;
