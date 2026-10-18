@@ -6,7 +6,7 @@ import { $ } from './shell.js';
 import { EDGE_MODES, PRESETS } from './constants.js';
 import { vscode, S, persist } from './state.js';
 import { canShowCode, codeKey, requestSource, onSource, refreshCode } from './code.js';
-import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, computeVisible, nodeLabel, descendantsOf } from './model.js';
+import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, computeVisible, descendantsOf } from './model.js';
 import { renderViewControls, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
 import { renderDetails } from './panels/details.js';
 import { onSummary } from './panels/summary.js';
@@ -186,36 +186,6 @@ export function collapseAll() {
   layoutAndRender('fit');
 }
 
-/**
- * Collapses everything except the neighbourhood of a node: the node itself, the
- * nodes it is connected to (through the arrows currently enabled) and the
- * folders and files that lead to them. Lets you study one area of a big graph.
- */
-export function focusArea(id) {
-  const target = nearestInTree(id);
-  if (!target) return;
-  const inside = [id];
-  const sub = descendantsOf(id);
-  if (sub.length <= 300) inside.push(...sub);
-  const insideSet = new Set(inside);
-  const keep = new Set([target]);
-  for (const u of inside) {
-    for (const e of S.out.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.target)) keep.add(nearestInTree(e.target));
-    for (const e of S.inc.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.source)) keep.add(nearestInTree(e.source));
-  }
-  const wasOpen = S.expanded.has(target);
-  S.expanded = new Set();
-  for (const k of keep) if (k) for (const a of ancestors(k)) S.expanded.add(a);
-  if (wasOpen) S.expanded.add(target);
-  S.codeOpen.delete(target);
-  S.selected = target;
-  S.selectedEdge = null;
-  persist();
-  layoutAndRender('fit');
-  renderer.centerOn(target, false);
-  renderDetails();
-  setStatus('Showing only what is connected to ' + nodeLabel(S.nodes.get(target)) + '. Use Expand or Collapse to change this.');
-}
 
 export function trace(id, direction) {
   // Highlight everything reachable through call edges (callees or callers).
@@ -410,7 +380,6 @@ document.addEventListener('keydown', ev => {
       select(p);
     }
   } else if (ev.key === 'Enter' && S.selected) openSource(S.selected);
-  else if ((ev.key === 'o' || ev.key === 'O') && !ev.ctrlKey && !ev.metaKey && S.selected) focusArea(S.selected);
   else if ((ev.key === 'c' || ev.key === 'C') && !ev.ctrlKey && !ev.metaKey && S.selected) {
     toggleCode(S.selected);
     renderDetails();
@@ -493,4 +462,4 @@ setStatus('Scanning C/C++ files…', true);
 vscode.postMessage({ type: 'ready' });
 
 // Exposed for tests.
-window.__codeGraph = { S, renderer, loadGraph, reveal, toggle, toggleCode, trace, centerOn: (id, animate) => renderer.centerOn(id, animate), applyPreset, setEdgeMode, focusArea };
+window.__codeGraph = { S, renderer, loadGraph, reveal, toggle, toggleCode, trace, centerOn: (id, animate) => renderer.centerOn(id, animate), applyPreset, setEdgeMode };

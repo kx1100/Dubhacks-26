@@ -134,11 +134,6 @@ async function main() {
     const all = await evaluate("drawnEdges().length");
     assert(all > selected.n, 'All shows more arrows than Selected');
 
-    // 9. Collapse others keeps only the neighbourhood of the node open.
-    await evaluate(`cg.focusArea(nodeByName('log_init').id); true`);
-    assert.strictEqual(await evaluate("cg.S.expanded.has('file:src/main.cpp')"), true, 'the file of the caller stays open');
-    assert.strictEqual(await evaluate("cg.S.expanded.has('file:src/shape.cpp')"), false, 'unrelated files are collapsed');
-
     // 10. Calls view: left to right, bundled arrows whose counts add up.
     await open('?preset=calls');
     assert(await evaluate("waitFor(() => cg.S.preset === 'calls' && drawnEdges('bundle').length > 0, 5000)"), 'calls view applied');

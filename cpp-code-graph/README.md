@@ -15,7 +15,6 @@ A VS Code extension that draws a C or C++ codebase as an interactive graph of fo
 | Open source | Ctrl+click or Enter |
 | Search | `/`, then Enter / Shift+Enter to cycle |
 | Show / hide code | `</>` button or `C` |
-| Collapse others | `O` |
 | Fit to view | `F` |
 | Clear highlight / selection | Esc |
 
@@ -29,7 +28,7 @@ A VS Code extension that draws a C or C++ codebase as an interactive graph of fo
 - **Arrows:** show only the selected node's (**Selected**), one bundled arrow per file/folder pair (**Bundled**), or **All**.
 - **Inline code.** Open a symbol's syntax-highlighted source inside its node; click a line to jump to it in the editor.
 - **Details panel.** A node's signature, location, callers, callees, members and dependencies, plus an optional AI summary (cached per workspace).
-- **Exploring:** focus mode, collapse others, trace callers/callees, and **Show in Code Graph** from the editor's right-click menu.
+- **Exploring:** focus mode, trace callers/callees, and **Show in Code Graph** from the editor's right-click menu.
 - **Live updates** when C/C++ files are saved, created or deleted.
 
 ### Ask AI

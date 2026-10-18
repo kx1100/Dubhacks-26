@@ -10,7 +10,7 @@ import { summaryBlock, bindSummary, scheduleSummary } from './summary.js';
 import { openImpact } from './impact.js';
 import { renderSuggestions, ask, renderOpts } from './ask.js';
 import { renderer } from '../renderer.js';
-import { toggleCode, toggle, reveal, openSource, focusArea, trace, revealAll, switchTab } from '../main.js';
+import { toggleCode, toggle, reveal, openSource, trace, revealAll, switchTab } from '../main.js';
 
 export function nodeChip(id, extra) {
   const n = S.nodes.get(id);
@@ -189,7 +189,6 @@ export function renderDetails() {
       ${children.length ? `<button data-act="toggle">${S.expanded.has(n.id) ? 'Collapse' : 'Expand'}</button>` : ''}
       ${isFn ? '<button data-act="callees" title="Highlight everything this function calls, directly or indirectly">Trace callees</button><button data-act="callers" title="Highlight everything that leads to this function">Trace callers</button>' : ''}
       <button data-act="center">Center</button>
-      <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
       ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
     </div></details>
     ${members}
@@ -209,7 +208,6 @@ export function renderDetails() {
       } else if (act === 'callees') trace(n.id, 'out');
       else if (act === 'callers') trace(n.id, 'in');
       else if (act === 'center') renderer.centerOn(nearestInTree(n.id) || n.id, true);
-      else if (act === 'focusArea') focusArea(n.id);
       else if (act === 'impact') openImpact(n.id);
       else if (act === 'tracePath') {
         switchTab('ai');
