@@ -83,6 +83,13 @@ const KIND_LABEL = {
 // Code card geometry, in graph (model) pixels.
 const CARD = { header: 26, line: 16, maxLines: 18, char: 7.2, gutter: 52, minW: 240, maxW: 620, pad: 14 };
 
+// Label size of every node, in graph pixels.
+const NODE_FONT = 12;
+
+// Padding around a closed node's label: the more nodes it is connected to, the
+// bigger it is. 0, 1, 3, 7 and 15+ connections add 0, 7, 14, 21 and 24 px.
+const SIZE = { base: 8, fileBase: 10, step: 7, max: 24 };
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -97,6 +104,8 @@ const state = {
     childCount: new Map(),
     /** @type {Map<string, number>} box id -> number of symbols inside it, all the way down */
     descCount: new Map(),
+    /** @type {Map<string, number>} node id -> how many distinct nodes it is connected to (see connections) */
+    degree: new Map(),
     side: { open: saved.sideOpen ?? true },
     /** @type {Set<string>} expanded file ids */
     expanded: new Set(saved.expanded || []),
@@ -227,13 +236,15 @@ function stylesheet() {
             style: {
                 label: 'data(label)',
                 'font-family': c.font,
-                'font-size': 12,
+                // One size for every node, closed or open: a node's size shows
+                // how connected it is through its padding, never its text.
+                'font-size': NODE_FONT,
                 color: c.fg,
                 'text-valign': 'center',
                 'text-halign': 'center',
                 width: 'label',
                 height: 'label',
-                padding: '8px',
+                padding: (/** @type {cytoscape.NodeSingular} */ ele) => `${ele.data('pad') ?? SIZE.base}px`,
                 shape: 'round-rectangle',
                 'background-color': c.nodeBg,
                 'border-width': 1.5,
@@ -241,7 +252,7 @@ function stylesheet() {
             },
         },
         // Files: headers and sources differ in color and shape.
-        { selector: 'node[kind = "file"]', style: { 'font-weight': 'bold', padding: '10px', 'border-width': 2, 'border-color': c.source, shape: 'rectangle' } },
+        { selector: 'node[kind = "file"]', style: { 'font-weight': 'bold', 'border-width': 2, 'border-color': c.source, shape: 'rectangle' } },
         { selector: 'node[kind = "file"][?header]', style: { 'border-color': c.header, shape: 'cut-rectangle' } },
         {
             selector: 'node[kind = "file"]:parent',
@@ -261,7 +272,7 @@ function stylesheet() {
         { selector: 'node[?declOnly]', style: { 'border-style': 'dashed', color: c.muted } },
         { selector: 'node[kind = "struct"], node[kind = "class"]', style: { 'border-color': c.type, shape: 'rectangle', 'font-style': 'italic' } },
         { selector: 'node[kind = "class"]', style: { 'font-weight': 'bold', 'border-width': 2 } },
-        { selector: 'node[kind = "field"]', style: { 'border-color': c.typedef, 'border-width': 1, 'font-size': 11, shape: 'rectangle', color: c.muted } },
+        { selector: 'node[kind = "field"]', style: { 'border-color': c.typedef, 'border-width': 1, shape: 'rectangle', color: c.muted } },
         // An open class (or C++ struct) is a box inside its file's box, holding its methods.
         {
             selector: 'node[kind = "class"]:parent, node[kind = "struct"]:parent',
@@ -411,13 +422,47 @@ function fileLabel(/** @type {GraphNode} */ n, /** @type {boolean} */ open) {
     return open || !kids ? n.name : `${n.name}  (+${kids})`;
 }
 
+/**
+ * How many distinct nodes each node is connected to, by arrows either way. A
+ * class counts the nodes outside it connected to it or its members, and a file
+ * the other files connected to anything in it (what Bundled draws for it).
+ * AI links don't count: they aren't part of the code.
+ */
+function connections(/** @type {GraphData} */ data) {
+    /** @type {Map<string, Set<string>>} */
+    const sets = new Map();
+    for (const e of data.edges) {
+        if (e.kind === 'semantic' || e.s === e.t) continue;
+        for (const [from, to] of [
+            [e.s, e.t],
+            [e.t, e.s],
+        ]) {
+            const around = new Set([to, ...boxesAround(to)]);
+            for (const id of [from, ...boxesAround(from)]) {
+                if (around.has(id)) continue; // the other end is inside this box
+                const other = state.byId.get(id)?.kind === 'file' ? fileOf(to) : to;
+                let s = sets.get(id);
+                if (!s) sets.set(id, (s = new Set()));
+                s.add(other);
+            }
+        }
+    }
+    return new Map([...sets].map(([id, s]) => [id, s.size]));
+}
+
+/** Padding around a closed node's label for how connected it is (see SIZE). */
+function padFor(/** @type {GraphNode} */ n) {
+    const base = n.kind === 'file' ? SIZE.fileBase : SIZE.base;
+    return base + Math.round(Math.min(SIZE.max, SIZE.step * Math.log2(1 + (state.degree.get(n.id) || 0))));
+}
+
 /** Every file, closed: the layout places files first, then opens them in place. */
 function fileElements() {
     return (state.data?.nodes ?? [])
         .filter((n) => n.kind === 'file')
         .map((n) => ({
             group: /** @type {const} */ ('nodes'),
-            data: { id: n.id, label: fileLabel(n, false), kind: n.kind, header: !!n.header, status: n.status },
+            data: { id: n.id, label: fileLabel(n, false), kind: n.kind, header: !!n.header, status: n.status, pad: padFor(n) },
         }));
 }
 
@@ -434,6 +479,7 @@ function childElements(/** @type {string} */ boxId) {
                 parent: boxId,
                 status: n.status,
                 declOnly: (n.kind === 'function' || n.kind === 'method') && !n.defFile && !n.isPure,
+                pad: padFor(n),
             },
         }));
 }
@@ -1056,12 +1102,15 @@ function nodeTooltip(/** @type {GraphNode} */ n) {
     const status = n.status ? `<div class="muted">${esc(STATUS_LABEL[n.status])}</div>` : '';
     const summary = S.summaries.get(n.id);
     const about = summary?.status === 'ready' && summary.summary ? `<div>${esc(summary.summary.purpose)}</div>` : '';
+    const degree = state.degree.get(n.id) || 0;
+    const plural = (/** @type {string} */ word) => `${degree} ${word}${degree === 1 ? '' : 's'}`;
+    const linked = `<div class="muted">Connected to ${plural(n.kind === 'file' ? 'other file' : 'node')}</div>`;
     if (n.kind === 'file') {
         const kids = state.childCount.get(n.id) || 0;
         const role = n.header ? 'Header file: declares what other files can use' : 'Source file: contains the code';
         const open = state.mode === 'diff' && n.status === 'modified' ? 'double-click to see the diff' : 'double-click to open the file';
         const hint = kids ? (state.expanded.has(n.id) ? 'Click to close' : `Click to show its ${kids} functions and types`) : '';
-        return `<b>${esc(n.file)}</b><div class="muted">${esc(role)}</div>${status}${about}${hint ? `<div class="hint">${esc(hint)} · ${open}</div>` : ''}`;
+        return `<b>${esc(n.file)}</b><div class="muted">${esc(role)}</div>${linked}${status}${about}${hint ? `<div class="hint">${esc(hint)} · ${open}</div>` : ''}`;
     }
     const kind = KIND_LABEL[n.kind] || n.kind;
     const method = n.kind === 'method';
@@ -1083,7 +1132,7 @@ function nodeTooltip(/** @type {GraphNode} */ n) {
           ? 'Click to hide the code'
           : 'Click to show the code';
     const shown = n.qname && n.qname !== n.name ? n.qname : n.name;
-    return `<b>${esc(shown)}</b> <span class="muted">${esc(kind)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${extra.map((x) => `<div class="muted">${esc(x)}</div>`).join('')}<div class="muted">${esc(where)}</div>${status}${about}<div class="hint">${hint} · double-click to open in the editor</div>`;
+    return `<b>${esc(shown)}</b> <span class="muted">${esc(kind)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${extra.map((x) => `<div class="muted">${esc(x)}</div>`).join('')}<div class="muted">${esc(where)}</div>${linked}${status}${about}<div class="hint">${hint} · double-click to open in the editor</div>`;
 }
 
 function edgeTooltip(/** @type {cytoscape.EdgeSingular} */ edge) {
@@ -1367,6 +1416,7 @@ function loadGraph(m) {
         state.childCount.set(n.parent, (state.childCount.get(n.parent) || 0) + 1);
         for (const box of boxesAround(n.id)) state.descCount.set(box, (state.descCount.get(box) || 0) + 1);
     }
+    state.degree = connections(data);
     // The side panel reads the graph as the extension sent it.
     setGraph(m.data, m.title);
     if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
