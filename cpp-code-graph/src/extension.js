@@ -529,7 +529,7 @@ class GraphPanel {
 
   html(webview, media) {
     const nonce = crypto.randomBytes(16).toString('base64');
-    const js = webview.asWebviewUri(vscode.Uri.joinPath(media, 'graph.js'));
+    const js = webview.asWebviewUri(vscode.Uri.joinPath(media, 'dist', 'graph.js'));
     const highlightJs = webview.asWebviewUri(vscode.Uri.joinPath(media, 'highlight.js'));
     const css = webview.asWebviewUri(vscode.Uri.joinPath(media, 'graph.css'));
     const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};`;

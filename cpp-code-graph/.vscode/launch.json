@@ -5,6 +5,7 @@
       "name": "Run Extension (sample project)",
       "type": "extensionHost",
       "request": "launch",
+      "preLaunchTask": "build webview",
       "args": ["--extensionDevelopmentPath=${workspaceFolder}", "${workspaceFolder}/sample"]
     }
   ]

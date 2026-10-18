@@ -9,10 +9,13 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const include = ['package.json', 'README.md', 'src', 'media'];
+// The webview sources are bundled into media/dist/graph.js; only the bundle ships.
+const skip = ['media/webview', 'media/graph.js', 'media/layout.js'].map(p => path.join(root, p));
+require('./build-webview').build({ sourcemap: false, minify: true });
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'vsix-'));
 const ext = path.join(stage, 'extension');
 fs.mkdirSync(ext);
-for (const item of include) fs.cpSync(path.join(root, item), path.join(ext, item), { recursive: true });
+for (const item of include) fs.cpSync(path.join(root, item), path.join(ext, item), { recursive: true, filter: src => !skip.includes(src) && !src.endsWith('.map') });
 fs.copyFileSync(path.join(root, 'LICENSE'), path.join(ext, 'LICENSE.txt'));
 
 const xmlEsc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -23,6 +23,17 @@
     "architecture"
   ],
   "main": "./src/extension.js",
+  "scripts": {
+    "build": "node scripts/build-webview.js",
+    "watch": "node scripts/build-webview.js --watch",
+    "test": "node test/smoke.js && node test/ui.test.js",
+    "package": "node scripts/package.js"
+  },
+  "devDependencies": {
+    "cytoscape": "3.34.4",
+    "cytoscape-elk": "2.3.0",
+    "esbuild": "0.28.2"
+  },
   "activationEvents": [
     "onLanguage:c",
     "onLanguage:cpp"

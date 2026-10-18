@@ -74,17 +74,18 @@ There is no preprocessing or template instantiation, so calls through macros, fu
 
 ## Development
 
-Plain JavaScript, no build step.
+Plain JavaScript. The extension host runs from `src/` as is; the webview is bundled with esbuild (`npm run build`, or `npm run watch`) from `media/webview/main.js` into `media/dist/graph.js`.
 
 - `src/parser/`: lexer and parser
 - `src/graph/`: name resolution, graph building and diffing
 - `src/ai/`: Language Model API integration (summaries, Ask AI agent, impact, AI layer)
 - `src/extension.js`: commands, webview and file watching
-- `media/`: the webview (custom SVG renderer, no external libraries)
+- `media/`: the webview (custom SVG renderer; `layout.js` is the upcoming Cytoscape + ELK layout)
 
 | Task | Command |
 | --- | --- |
-| Run | Open this folder in VS Code and press **F5** (uses `sample/`) |
+| Build webview | `npm run build` (`npm run watch` to rebuild on change) |
+| Run | Open this folder in VS Code and press **F5** (builds the webview, uses `sample/`) |
 | Dump parser output | `node test/dump.js <folder>` |
 | Extension smoke test | `node test/smoke.js` |
 | Unit tests | `node test/<name>.test.js` (`highlight`, `graphTools`, `agent`, `summaries`, `impact`, `impactCheck`, `semantic`) |
