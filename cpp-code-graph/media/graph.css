@@ -1679,11 +1679,3 @@ details.morerels > summary {
 details.morerels > details {
   margin-left: 10px;
 }
-.aimenu .row {
-  border-radius: 3px;
-  padding: 3px 6px;
-  white-space: nowrap;
-}
-.aimenu .row:hover {
-  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
-}

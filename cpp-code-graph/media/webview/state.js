@@ -43,9 +43,7 @@ export const S = {
   concepts: {}, // node id -> concept tags from the AI layer
   semantic: null, // {model, time, edges, concepts, tagged} when the AI layer is built
   semanticBusy: false,
-  historyOpen: false, // the history popover in the Ask AI tab
-  aiMenuOpen: false, // the ⋯ menu next to Ask
-  contextOff: null, // node id the user left out of the question's context (reset by selecting another)
+  historyOpen: false, // the history popover in the Ask AI tab  contextOff: null, // node id the user left out of the question's context (reset by selecting another)
   layout: null, // the SVG renderer's boxes: {vis, abs, width, height}
   vis: null, // the visible graph from computeVisible(): {visible, visibleSet, rep, repOf, edges, bundles}
   savedMode: saved.mode || null

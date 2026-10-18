@@ -173,12 +173,12 @@ async function main() {
     //     its nodes are marked, and the answer's strip opens steps, evidence and confidence.
     await open('?ai');
     await evaluate("document.querySelector('.tabs [data-tab=\"ai\"]').click(); true");
-    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-checked')"), 'false');
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'false');
     assert.strictEqual(await evaluate("document.getElementById('suggestions').classList.contains('hidden')"), false, 'suggestions show while the box is empty');
     assert.strictEqual(await evaluate("!!document.getElementById('historyBtn')"), false, 'no history button without history');
     await evaluate("document.getElementById('traceChip').click(); true");
     assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
-    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-checked')"), 'true');
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'true');
     assert.strictEqual(await evaluate("document.getElementById('askBtn').textContent"), 'Trace');
     assert.match(await evaluate("document.getElementById('question').placeholder"), /What to trace/);
     await evaluate("window.__sent.length = 0; document.getElementById('question').value = 'How are shapes drawn?'; document.getElementById('askBtn').click(); true");
@@ -266,7 +266,7 @@ async function main() {
     // 14. History: answers are kept, newest first; an old one comes back with its steps and highlight.
     assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'), 'second answer saved');
     // History sits behind a button with its count, in a popover that closes on an outside click.
-    assert.strictEqual(await evaluate("document.getElementById('historyBtn').textContent.replace(/\\s+/g, ' ').trim()"), '⟲ Recent questions 2');
+    assert.strictEqual(await evaluate("document.getElementById('historyBtn').textContent"), '⟲ 2');
     assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), true);
     await evaluate("document.getElementById('historyBtn').click(); true");
     assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), false);

@@ -51,7 +51,7 @@ export function ask(q, mode, focusId) {
   vscode.postMessage({ type: 'ask', question: q, focus, mode });
 }
 
-/** The row under the question box: the selection as context, a menu with Trace and history, and Ask or Stop. */
+/** The row under the question box: Trace, the selection as context, history, and Ask or Stop. */
 export function renderOpts() {
   const el = $('aiOpts');
   const trace = S.aiMode === 'path';
@@ -63,28 +63,14 @@ export function renderOpts() {
     ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.name)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
   }
   const count = (S.history || []).length;
-  // Trace shows as a chip only while it is on, so the mode is never hidden.
-  const traceOn = trace ? `<button id="traceOff" class="opt" aria-pressed="true" title="${esc(AI_MODES.path.desc)}. Click to ask a normal question.">⤳ <span class="lbl">Trace</span><span class="x">✕</span></button>` : '';
-  const menu = `<div class="popup aimenu${S.aiMenuOpen ? '' : ' hidden'}" id="aiMenu" style="left:auto;right:0;min-width:200px">
-      <div class="row" id="traceChip" role="menuitemcheckbox" aria-checked="${trace}" title="${esc(AI_MODES.path.desc)}">${trace ? '✓' : '⤳'} Trace an execution path</div>
-      ${count ? `<div class="row" id="historyBtn" role="menuitem" aria-expanded="${!!S.historyOpen}">⟲ Recent questions <span class="muted">${count}</span></div>` : ''}
-    </div>`;
-  const more = `<span class="menu-anchor"><button id="aiMore" class="iconbtn" aria-haspopup="menu" aria-expanded="${!!S.aiMenuOpen}" title="Trace a path, recent questions">⋯</button>${menu}</span>`;
+  const hist = count ? `<button id="historyBtn" class="iconbtn" aria-expanded="${!!S.historyOpen}" title="Recent questions">⟲ ${count}</button>` : '';
   const go = S.ai.busy ? '<button id="cancelAsk">Stop</button>' : `<button id="askBtn" class="primary" title="${esc(AI_MODES[S.aiMode].desc)} (Ctrl+Enter)">${trace ? 'Trace' : 'Ask'}</button>`;
-  el.innerHTML = `${traceOn}${ctx}<span class="spacer"></span>${more}${go}`;
-  const setTrace = on => {
-    S.aiMode = on ? 'path' : 'ask';
-    S.aiMenuOpen = false;
+  el.innerHTML = `<button id="traceChip" class="opt" aria-pressed="${trace}" title="${esc(AI_MODES.path.desc)}">⤳ <span class="lbl">Trace</span></button>${ctx}<span class="spacer"></span>${hist}${go}`;
+  $('traceChip').onclick = () => {
+    S.aiMode = trace ? 'ask' : 'path';
     persist();
     renderOpts();
   };
-  $('aiMore').onclick = ev => {
-    ev.stopPropagation();
-    S.aiMenuOpen = !S.aiMenuOpen;
-    renderOpts();
-  };
-  $('traceChip').onclick = () => setTrace(!trace);
-  if ($('traceOff')) $('traceOff').onclick = () => setTrace(false);
   if ($('ctxChip'))
     $('ctxChip').onclick = () => {
       S.contextOff = S.contextOff === n.id ? null : n.id;
@@ -93,7 +79,6 @@ export function renderOpts() {
   if ($('historyBtn'))
     $('historyBtn').onclick = ev => {
       ev.stopPropagation();
-      S.aiMenuOpen = false;
       S.historyOpen = !S.historyOpen;
       renderHistory();
     };

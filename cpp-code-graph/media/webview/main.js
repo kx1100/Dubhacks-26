@@ -11,7 +11,7 @@ import { renderViewControls, renderBanner, renderFilters, renderStats, setStatus
 import { renderDetails } from './panels/details.js';
 import { onSummary } from './panels/summary.js';
 import { requestImpact, onImpact, renderImpact } from './panels/impact.js';
-import { renderSuggestions, ask, setVisited, renderAnswer, renderHistory, renderOpts, applyAiHighlight } from './panels/ask.js';
+import { renderSuggestions, ask, setVisited, renderAnswer, renderHistory, applyAiHighlight } from './panels/ask.js';
 import { renderer, useRenderer } from './renderer.js';
 import { svgRenderer } from './renderer-svg.js';
 
@@ -344,10 +344,6 @@ $('filtersBtn').onclick = ev => {
 };
 document.addEventListener('click', ev => {
   if (!ev.target.closest('#filters') && ev.target.id !== 'filtersBtn') $('filters').classList.add('hidden');
-  if (S.aiMenuOpen && ev.target.isConnected && !ev.target.closest('#aiMenu, #aiMore')) {
-    S.aiMenuOpen = false;
-    renderOpts();
-  }
   if (S.historyOpen && ev.target.isConnected && !ev.target.closest('#history, #historyBtn')) {
     S.historyOpen = false;
     renderHistory();
