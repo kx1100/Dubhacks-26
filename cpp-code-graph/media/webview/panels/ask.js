@@ -5,7 +5,8 @@ import { KIND_INFO, AI_MODES, ROUTE_KINDS, STEP_GLYPHS } from '../constants.js';
 import { esc, ago } from '../util.js';
 import { vscode, S, persist } from '../state.js';
 import { nodeChip, bindLinks } from './details.js';
-import { render, hopTitle } from '../../graph.js';
+import { renderer } from '../renderer.js';
+import { hopTitle } from '../tooltip.js';
 import { trace, setHighlight, revealAll } from '../main.js';
 
 // Short labels for starter questions: [label, question, mode].
@@ -89,7 +90,7 @@ export function renderOpts() {
 /** Marks the nodes an investigation step looked at (null clears). */
 export function setVisited(ids) {
   S.visited = ids && ids.length ? new Set(ids.filter(id => S.nodes.has(id))) : null;
-  if (S.layout) render();
+  renderer.refreshStyle();
 }
 
 export function renderSteps(a) {
@@ -375,5 +376,5 @@ export function applyAiHighlight(revealToo) {
   const label = 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question) + (route && aiRoutes(a).length > 1 ? ` (${route.label})` : '');
   S.highlight = { ids, path: steps.map(st => st.id), route: { steps, divergeAt: route ? route.divergeAt || 0 : 0 }, label, source: 'ai', answer: a };
   if (revealToo) revealAll(ids);
-  else render();
+  else renderer.refreshStyle();
 }

@@ -10,7 +10,7 @@ const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
 const include = ['package.json', 'README.md', 'src', 'media'];
 // The webview sources are bundled into media/dist/graph.js; only the bundle ships.
-const skip = ['media/webview', 'media/graph.js', 'media/layout.js'].map(p => path.join(root, p));
+const skip = ['media/webview', 'media/layout.js'].map(p => path.join(root, p));
 require('./build-webview').build({ sourcemap: false, minify: true });
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'vsix-'));
 const ext = path.join(stage, 'extension');

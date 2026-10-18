@@ -81,7 +81,7 @@ Plain JavaScript. The extension host runs from `src/` as is; the webview is bund
 - `src/ai/`: Language Model API integration (summaries, Ask AI agent, impact, AI layer)
 - `src/extension.js`: commands, webview and file watching
 - `media/webview/`: the webview: `main.js` (messages, actions, bindings), `model.js` (tree, expansion, visible graph), `state.js`, `code.js` (code cards), `tooltip.js`, `shell.js` (page HTML) and `panels/` (toolbar, details, summary, impact, Ask AI)
-- `media/graph.js`: the SVG renderer; `media/layout.js` is the upcoming Cytoscape + ELK layout
+- `media/webview/renderer.js`: the renderer interface; `renderer-svg.js` implements it. `media/layout.js` is the upcoming Cytoscape + ELK layout
 
 | Task | Command |
 | --- | --- |

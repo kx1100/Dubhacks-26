@@ -5,14 +5,18 @@
 import { $ } from './shell.js';
 import { EDGE_MODES, PRESETS } from './constants.js';
 import { vscode, S, persist } from './state.js';
-import { canShowCode, requestSource, onSource, refreshCode } from './code.js';
-import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, nodeLabel, descendantsOf } from './model.js';
-import { renderViewControls, renderBanner, renderFilters, renderStats, setStatus, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
+import { canShowCode, codeKey, codeSide, requestSource, onSource, refreshCode } from './code.js';
+import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, computeVisible, nodeLabel, descendantsOf } from './model.js';
+import { renderViewControls, renderBanner, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
 import { renderDetails } from './panels/details.js';
 import { onSummary } from './panels/summary.js';
 import { requestImpact, onImpact, impactOn, renderImpact } from './panels/impact.js';
 import { renderSuggestions, ask, setVisited, renderAnswer, renderHistory, applyAiHighlight } from './panels/ask.js';
-import { svg, layoutAndRender, render, fitView, centerOn, relayoutKeeping } from '../graph.js';
+import { renderer, useRenderer } from './renderer.js';
+import { svgRenderer } from './renderer-svg.js';
+
+useRenderer(svgRenderer);
+renderer.mount($('canvas'));
 
 // ---------------------------------------------------------------------------
 // Loading a graph
@@ -29,6 +33,37 @@ export function loadGraph(graph, mode, title, compare) {
   layoutAndRender(fresh ? 'fit' : S.view ? null : 'fit');
   renderDetails();
   setStatus(mode === 'diff' ? 'Comparison ready. Green = added, red = removed, yellow = modified.' : 'Ready. Double-click a node to expand it, Ctrl+click to open its source.');
+}
+
+// ---------------------------------------------------------------------------
+// The visible graph
+
+/** Recomputes what is visible (after expand, collapse, filters…) into S.vis. */
+function updateVisible() {
+  // Expanding a node (for example via Expand all) wins over showing its code.
+  for (const id of [...S.codeOpen]) if (S.expanded.has(id)) S.codeOpen.delete(id);
+  S.vis = computeVisible();
+  const empty = $('empty');
+  if (!S.graph.nodes.length) {
+    empty.innerHTML = S.mode === 'diff' ? 'No C/C++ files in these revisions.' : 'No C/C++ files were found in this workspace.<br><span class="muted">Check the <code>codeGraph.include</code> and <code>codeGraph.exclude</code> settings.</span>';
+    empty.classList.remove('hidden');
+  } else if (!S.vis.visible.length) {
+    empty.innerHTML = S.mode === 'diff' ? 'No structural changes between these versions.' : 'Nothing to show with the current filters.';
+    empty.classList.remove('hidden');
+  } else empty.classList.add('hidden');
+}
+
+/** Shows the visible graph from scratch; 'fit' fits it to the view. */
+export function layoutAndRender(viewAction) {
+  updateVisible();
+  renderer.setGraph(S.vis, { fit: viewAction === 'fit' });
+}
+
+/** Shows a node that was opened or closed, keeping the rest of the view in place. */
+function showChange(id, opened) {
+  updateVisible();
+  if (opened) renderer.open(id);
+  else renderer.close(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +89,7 @@ export function setEdgeMode(mode) {
   S.edgeMode = mode;
   persist();
   renderViewControls();
-  render();
+  renderer.refreshStyle();
 }
 
 export function toggleCode(id, force) {
@@ -69,7 +104,7 @@ export function toggleCode(id, force) {
     requestSource(n);
   } else S.codeOpen.delete(id);
   persist();
-  relayoutKeeping(id);
+  showChange(id, open);
 }
 
 // ---------------------------------------------------------------------------
@@ -90,9 +125,8 @@ export function toggle(id, force) {
     }
   }
   persist();
-  relayoutKeeping(id);
+  showChange(id, open);
 }
-
 
 export function reveal(id, opts) {
   // Expand ancestors so that id becomes visible, select it and center on it.
@@ -112,7 +146,7 @@ export function reveal(id, opts) {
   S.selectedEdge = null;
   persist();
   layoutAndRender(null);
-  if (!opts || opts.center !== false) centerOn(target, true);
+  if (!opts || opts.center !== false) renderer.centerOn(target, true);
   renderDetails();
   switchTab('details', true);
 }
@@ -121,7 +155,7 @@ export function select(id) {
   S.selected = id;
   S.selectedEdge = null;
   persist();
-  render();
+  renderer.refreshStyle();
   renderDetails();
 }
 
@@ -185,7 +219,7 @@ export function focusArea(id) {
   S.selectedEdge = null;
   persist();
   layoutAndRender('fit');
-  centerOn(target, false);
+  renderer.centerOn(target, false);
   renderDetails();
   setStatus('Showing only what is connected to ' + nodeLabel(S.nodes.get(target)) + '. Use Expand or Collapse to change this.');
 }
@@ -217,7 +251,7 @@ export function trace(id, direction) {
 
 export function setHighlight(h) {
   S.highlight = h && h.ids.size ? h : null;
-  render();
+  renderer.refreshStyle();
 }
 
 export function revealAll(ids) {
@@ -240,13 +274,67 @@ export function switchTab(tab, quiet) {
   if (tab === 'impact') renderImpact();
 }
 
+// ---------------------------------------------------------------------------
+// What the user does on the graph (see the events in renderer.js)
+
+renderer.on('select', id => {
+  select(id);
+  switchTab('details', true);
+});
+renderer.on('openSource', id => openSource(id));
+renderer.on('activate', id => {
+  if (kids(id).length) toggle(id);
+  else openSource(id);
+  renderDetails();
+});
+renderer.on('toggle', id => {
+  toggle(id);
+  if (S.selected === id) renderDetails();
+});
+renderer.on('toggleCode', id => {
+  toggleCode(id);
+  if (S.selected === id) renderDetails();
+});
+renderer.on('openLine', (id, line) => {
+  const n = S.nodes.get(id);
+  const entry = n && S.code.get(codeKey(n));
+  if (entry && entry.file) vscode.postMessage({ type: 'open', file: entry.file, line, side: codeSide(n), preserveFocus: false });
+});
+renderer.on('reveal', id => reveal(id));
+renderer.on('edgeSelect', key => {
+  S.selectedEdge = key;
+  S.selected = null;
+  renderer.refreshStyle();
+  renderDetails();
+  switchTab('details', true);
+});
+renderer.on('background', () => {
+  if (!S.selected && !S.selectedEdge) return;
+  S.selected = null;
+  S.selectedEdge = null;
+  persist();
+  renderer.refreshStyle();
+  renderDetails();
+});
+renderer.on('rendered', () => {
+  // In "selected" mode an empty canvas of arrows needs a hint, or it looks like there are none.
+  $('edgeHint').classList.toggle('hidden', !(S.edgeMode === 'selected' && S.vis.edges.length && !S.selected && !S.selectedEdge && !S.highlight));
+  renderHighlightBar();
+});
+
+// ---------------------------------------------------------------------------
+// Toolbar, search and keyboard
+
+$('fit').onclick = () => renderer.fit(true);
+$('zoomIn').onclick = () => renderer.zoom(1.25);
+$('zoomOut').onclick = () => renderer.zoom(0.8);
 $('expandAll').onclick = expandLevel;
 $('collapseAll').onclick = collapseAll;
 $('focusMode').checked = S.focusMode;
 $('focusMode').onchange = ev => {
   S.focusMode = ev.target.checked;
   persist();
-  render();
+  renderer.refreshStyle();
 };
 $('filtersBtn').onclick = ev => {
   ev.stopPropagation();
@@ -273,7 +361,7 @@ $('question').addEventListener('keydown', ev => {
   }
 });
 
-export const search = $('search');
+const search = $('search');
 let searchTimer = null;
 search.addEventListener('input', () => {
   clearTimeout(searchTimer);
@@ -297,7 +385,7 @@ search.addEventListener('keydown', ev => {
     search.value = '';
     runSearch('');
     search.blur();
-    svg.focus();
+    renderer.focus();
   }
 });
 $('searchNext').onclick = () => gotoMatch(S.search.index + 1);
@@ -310,13 +398,13 @@ document.addEventListener('keydown', ev => {
     ev.preventDefault();
     search.focus();
     search.select();
-  } else if (ev.key === 'f' || ev.key === 'F') fitView(true);
+  } else if (ev.key === 'f' || ev.key === 'F') renderer.fit(true);
   else if (ev.key === 'Escape') {
     if (S.highlight) setHighlight(null);
     else if (S.selected || S.selectedEdge) {
       S.selected = null;
       S.selectedEdge = null;
-      render();
+      renderer.refreshStyle();
       renderDetails();
     }
   } else if ((ev.key === '+' || ev.key === '=' || ev.key === 'ArrowRight') && S.selected) toggle(S.selected, true);
@@ -334,7 +422,6 @@ document.addEventListener('keydown', ev => {
     renderDetails();
   }
 });
-
 
 // ---------------------------------------------------------------------------
 // Messages from the extension
@@ -355,7 +442,7 @@ window.addEventListener('message', ev => {
       break;
     case 'source': {
       const id = onSource(m);
-      if (id) relayoutKeeping(id);
+      if (id) renderer.setCodeCard(id);
       break;
     }
     case 'reveal':
@@ -389,7 +476,7 @@ window.addEventListener('message', ev => {
       if (m.type === 'impactAIResult') imp.ai = m.error ? { error: m.error } : { verdicts: new Map(m.verdicts.map(v => [v.id, v])), asked: m.asked, model: m.model };
       else imp.check = { result: m };
       if (S.tab === 'impact') renderImpact();
-      if (m.type === 'impactAIResult' && impactOn()) render();
+      if (m.type === 'impactAIResult' && impactOn()) renderer.refreshStyle();
       break;
     }
     case 'aiHistory':
@@ -420,4 +507,4 @@ setStatus('Scanning C/C++ files…', true);
 vscode.postMessage({ type: 'ready' });
 
 // Exposed for tests.
-window.__codeGraph = { S, loadGraph, reveal, toggle, toggleCode, trace, centerOn, applyPreset, setEdgeMode, focusArea };
+window.__codeGraph = { S, renderer, loadGraph, reveal, toggle, toggleCode, trace, centerOn: (id, animate) => renderer.centerOn(id, animate), applyPreset, setEdgeMode, focusArea };

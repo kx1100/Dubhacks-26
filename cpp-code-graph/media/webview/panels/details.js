@@ -9,7 +9,7 @@ import { kids, nearestInTree, findEdge, kidsRaw } from '../model.js';
 import { summaryBlock, bindSummary, scheduleSummary } from './summary.js';
 import { openImpact } from './impact.js';
 import { renderSuggestions, ask, renderOpts } from './ask.js';
-import { centerOn } from '../../graph.js';
+import { renderer } from '../renderer.js';
 import { toggleCode, toggle, reveal, openSource, focusArea, trace, revealAll, switchTab } from '../main.js';
 
 export function nodeChip(id, extra) {
@@ -108,7 +108,7 @@ export function renderDetails() {
   renderOpts();
   renderSuggestions();
   const el = $('tab-details');
-  if (S.selectedEdge && S.layout) {
+  if (S.selectedEdge && S.vis) {
     const e = findEdge(S.selectedEdge);
     if (e) return renderEdgeDetails(el, e);
   }
@@ -196,7 +196,7 @@ export function renderDetails() {
         renderDetails();
       } else if (act === 'callees') trace(n.id, 'out');
       else if (act === 'callers') trace(n.id, 'in');
-      else if (act === 'center') centerOn(nearestInTree(n.id) || n.id, true);
+      else if (act === 'center') renderer.centerOn(nearestInTree(n.id) || n.id, true);
       else if (act === 'focusArea') focusArea(n.id);
       else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
       else if (act === 'impact') openImpact(n.id);

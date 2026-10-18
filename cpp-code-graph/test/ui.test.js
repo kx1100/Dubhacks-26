@@ -1,6 +1,8 @@
 // Drives the webview harness in headless Chrome over the DevTools protocol.
 //   node test/ui.test.js            (set CHROME to the browser executable if it is not found)
 // Checks inline code cards and the header <-> source edges.
+// What is drawn is read through the renderer's debug hook (drawnNodes / drawnEdges);
+// checks of code cards, arrow badges, the path layer and S.layout are specific to the SVG renderer.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -57,11 +59,14 @@ async function main() {
       await send('Page.navigate', { url: `http://127.0.0.1:${HTTP_PORT}/test/harness.html${query || ''}` });
       await sleep(150);
       for (let i = 0; i < 80; i++) {
-        if (await evaluate('!!(window.__codeGraph && window.__codeGraph.S.graph && document.querySelector("#layerNodes .node"))').catch(() => false)) break;
+        if (await evaluate('!!(window.__codeGraph && window.__codeGraph.S.graph && window.__codeGraph.renderer.debug.nodes().length)').catch(() => false)) break;
         await sleep(100);
       }
       await evaluate(`
       window.cg = window.__codeGraph;
+      // What the renderer drew: node ids / edge keys having a class (see media/webview/renderer.js).
+      window.drawnNodes = cls => cg.renderer.debug.nodes(cls);
+      window.drawnEdges = cls => cg.renderer.debug.edges(cls);
       window.nodeByName = name => cg.S.graph.nodes.find(n => n.name === name);
       window.fire = (el, type, extra) => el.dispatchEvent(new PointerEvent(type, Object.assign({ bubbles: true, cancelable: true, button: 0, pointerId: 1 }, extra)));
       window.click = el => { fire(el, 'pointerdown'); fire(el, 'pointerup'); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); };
@@ -120,13 +125,13 @@ async function main() {
     await open('');
     assert.strictEqual(await evaluate('cg.S.preset'), 'structure');
     assert.strictEqual(await evaluate('cg.S.edgeMode'), 'selected');
-    assert.strictEqual(await evaluate("document.querySelectorAll('#layerEdges .edge').length"), 0, 'no arrows without a selection');
+    assert.strictEqual(await evaluate("drawnEdges().length"), 0, 'no arrows without a selection');
     assert.strictEqual(await evaluate("!document.getElementById('edgeHint').classList.contains('hidden')"), true, 'hint shown');
     await evaluate(`cg.reveal(nodeByName('log_init').id, { center: false }); true`);
-    const selected = JSON.parse(await evaluate(`JSON.stringify({ n: document.querySelectorAll('#layerEdges .edge').length, rel: document.querySelectorAll('#layerEdges .edge.related').length })`));
+    const selected = JSON.parse(await evaluate(`JSON.stringify({ n: drawnEdges().length, rel: drawnEdges('related').length })`));
     assert(selected.n > 0 && selected.n === selected.rel, 'only arrows of the selection are drawn: ' + JSON.stringify(selected));
     await evaluate("cg.setEdgeMode('all'); true");
-    const all = await evaluate("document.querySelectorAll('#layerEdges .edge').length");
+    const all = await evaluate("drawnEdges().length");
     assert(all > selected.n, 'All shows more arrows than Selected');
 
     // 9. Collapse others keeps only the neighbourhood of the node open.
@@ -136,12 +141,12 @@ async function main() {
 
     // 10. Calls view: left to right, bundled arrows whose counts add up.
     await open('?preset=calls');
-    assert(await evaluate("waitFor(() => cg.S.preset === 'calls' && document.querySelectorAll('#layerEdges .edge.bundle').length > 0, 5000)"), 'calls view applied');
+    assert(await evaluate("waitFor(() => cg.S.preset === 'calls' && drawnEdges('bundle').length > 0, 5000)"), 'calls view applied');
     const calls = JSON.parse(await evaluate(`JSON.stringify((() => {
       const L = cg.S.layout; const abs = L.abs;
       return { dir: cg.S.direction, mode: cg.S.edgeMode, srcX: abs.get('dir:src').x, cX: abs.get('dir:c').x,
         bundleSumOk: L.vis.bundles.every(b => b.count === b.members.reduce((n, m) => n + m.count, 0) && b.members.length > 1),
-        bundles: L.vis.bundles.length, bundleEls: document.querySelectorAll('#layerEdges .edge.bundle').length };
+        bundles: L.vis.bundles.length, bundleEls: drawnEdges('bundle').length };
     })())`));
     assert.strictEqual(calls.dir, 'LR');
     assert.strictEqual(calls.mode, 'bundled');
@@ -182,7 +187,7 @@ async function main() {
     assert(await evaluate("waitFor(() => !!document.getElementById('aiLive'))"), 'first step shown');
     const live = JSON.parse(await evaluate(`JSON.stringify({
       text: document.getElementById('aiLive').textContent,
-      visited: document.querySelectorAll('#layerNodes .node.visited').length,
+      visited: drawnNodes('visited').length,
       stop: !!document.getElementById('cancelAsk'),
       ask: !!document.getElementById('askBtn')
     })`));
@@ -198,7 +203,7 @@ async function main() {
     const done = JSON.parse(await evaluate(`JSON.stringify({
       steps: [...document.querySelectorAll('#aiSteps .stepi .st')].map(e => e.textContent),
       live: document.querySelectorAll('#aiSteps .stepi.live').length,
-      visited: document.querySelectorAll('#layerNodes .node.visited').length,
+      visited: drawnNodes('visited').length,
       chips: document.querySelectorAll('#answer .a .chip').length,
       conf: document.querySelector('#answer .metastrip .conf').title,
       trace: !!document.querySelector('#answer .q .tg'),
@@ -241,9 +246,9 @@ async function main() {
     // Hovering a step marks its nodes; clicking it highlights them.
     await openDrawer('steps');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseenter')); true");
-    assert(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length > 0"), 'hover marks the step nodes');
+    assert(await evaluate("drawnNodes('visited').length > 0"), 'hover marks the step nodes');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseleave')); true");
-    assert.strictEqual(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length"), 0);
+    assert.strictEqual(await evaluate("drawnNodes('visited').length"), 0);
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].click(); true");
     assert.strictEqual(await evaluate('cg.S.highlight.label'), 'Step 2: Outgoing calls of geo::Canvas::render (4)');
     assert.strictEqual((await toggle()).on, 'false', 'a step highlight is not the answer highlight');
@@ -417,8 +422,8 @@ async function main() {
       predict: !!document.querySelector('#tab-impact .predict'),
       shown: (document.getElementById('impShow') || {}).ariaPressed || document.getElementById('impShow') && document.getElementById('impShow').getAttribute('aria-pressed'),
       label: cg.S.highlight && cg.S.highlight.label,
-      high: [...document.querySelectorAll('#layerNodes .node.imp-high')].map(g => cg.S.nodes.get(g.dataset.id).name),
-      target: [...document.querySelectorAll('#layerNodes .node.imp-target')].map(g => cg.S.nodes.get(g.dataset.id).name)
+      high: drawnNodes('imp-high').map(id => cg.S.nodes.get(id).name),
+      target: drawnNodes('imp-target').map(id => cg.S.nodes.get(id).name)
     })`).then(JSON.parse);
     let im = await impact();
     assert.strictEqual(im.tab, 'impact');
@@ -484,7 +489,7 @@ async function main() {
     assert.ok(verdictRows.every(r => /^Reason \d+ line 3$/.test(r[3])), JSON.stringify(verdictRows));
     assert.strictEqual(ai.sum, '1 high, 0 medium, 4 low', 'counts follow the verdicts');
     // The graph uses the adjusted risk.
-    assert.strictEqual(await evaluate("document.querySelectorAll('#layerNodes .node.imp-high').length >= 1"), true);
+    assert.strictEqual(await evaluate("drawnNodes('imp-high').length >= 1"), true);
     // Check against edits: hits, false alarms and unrelated changes.
     await evaluate("window.__sent.length = 0; document.getElementById('impCheck').click(); true");
     assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impactCheck'))")).changeType, 'signature');
@@ -519,10 +524,10 @@ async function main() {
     // Off by default; the filter turns it on.
     assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), false);
     await evaluate(`cg.S.highlight = null; cg.reveal(cg.S.graph.nodes.find(n => n.qname === 'geo::Circle::area').id, { center: false }); true`);
-    assert.strictEqual(await evaluate("document.querySelectorAll('#layerEdges .edge.ek-semantic').length"), 0);
+    assert.strictEqual(await evaluate("drawnEdges('ek-semantic').length"), 0);
     await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"semantic\"]').click(); document.querySelector('#filtersBtn').click(); true");
     assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), true);
-    assert.ok(await evaluate("document.querySelectorAll('#layerEdges .edge.ek-semantic').length >= 1"), 'inferred link drawn');
+    assert.ok(await evaluate("drawnEdges('ek-semantic').length >= 1"), 'inferred link drawn');
     // The details panel: concepts and the inferred link with confidence, reason and evidence.
     const det = JSON.parse(await evaluate(`JSON.stringify({
       concepts: [...document.querySelectorAll('#tab-details .dhead ~ .concepts a.concept')].map(a => a.textContent),

@@ -6,7 +6,7 @@ import { esc } from '../util.js';
 import { vscode, S } from '../state.js';
 import { impactItems } from '../model.js';
 import { nodeChip, bindLinks } from './details.js';
-import { render } from '../../graph.js';
+import { renderer } from '../renderer.js';
 import { setHighlight, switchTab } from '../main.js';
 
 export function openImpact(id, changeType) {
@@ -44,7 +44,7 @@ export function applyImpactHighlight() {
   const ids = new Set([imp.target, ...imp.result.items.map(i => i.id)].filter(id => S.nodes.has(id)));
   const n = S.nodes.get(imp.target);
   S.highlight = { ids, path: [], label: `Impact: ${CHANGE_LABELS[imp.changeType].toLowerCase()} of ${n ? n.qname || n.name : imp.target}`, source: 'impact', impact: imp };
-  render();
+  renderer.refreshStyle();
 }
 
 export function syncImpactToggle() {

@@ -8,8 +8,8 @@ import { vscode, S, persist } from '../state.js';
 import { rebuildTree, initialExpansion } from '../model.js';
 import { syncImpactToggle } from './impact.js';
 import { syncAiToggle } from './ask.js';
-import { layoutAndRender, render } from '../../graph.js';
-import { applyPreset, setEdgeMode, reveal, setHighlight, revealAll } from '../main.js';
+import { renderer } from '../renderer.js';
+import { layoutAndRender, applyPreset, setEdgeMode, reveal, setHighlight, revealAll } from '../main.js';
 
 export function markCustom() {
   // Changing a filter by hand means the view no longer matches its preset.
@@ -176,7 +176,7 @@ export function runSearch(q) {
   }
   $('searchCount').textContent = ql ? (S.search.matches.length ? `${S.search.matches.length}` : 'none') : '';
   renderSearchList();
-  render();
+  renderer.refreshStyle();
 }
 
 export function renderSearchList() {

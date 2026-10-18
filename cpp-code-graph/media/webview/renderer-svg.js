@@ -1,47 +1,53 @@
 // SVG renderer: lays out the visible graph as nested, expandable boxes and draws
 // it as a zoomable SVG diagram, with its pointer, wheel and tooltip handling.
-// The model, panels and wiring are in webview/.
+// It implements the interface described in renderer.js.
 
-import { $ } from './webview/shell.js';
-import { KIND_INFO, EDGE_KINDS, ROUTE_KIND_ORDER } from './webview/constants.js';
-import { measureCtx, textWidth, esc, push } from './webview/util.js';
-import { vscode, S, persist } from './webview/state.js';
-import { codeSide, codeKey, canShowCode, codeCardHtml } from './webview/code.js';
-import { kids, ancestors, computeVisible, nodeLabel, relatedSets, highlightReps, isDescendant, changedDescendantCounts, impactTiers } from './webview/model.js';
-import { renderHighlightBar } from './webview/panels/toolbar.js';
-import { renderDetails } from './webview/panels/details.js';
-import { tooltipHtml } from './webview/tooltip.js';
-import { toggleCode, toggle, reveal, select, openSource, switchTab } from './webview/main.js';
+import { $ } from './shell.js';
+import { KIND_INFO, EDGE_KINDS, ROUTE_KIND_ORDER } from './constants.js';
+import { measureCtx, textWidth, esc, push } from './util.js';
+import { S, persist } from './state.js';
+import { canShowCode, codeKey, codeCardHtml } from './code.js';
+import { kids, ancestors, nodeLabel, relatedSets, highlightReps, isDescendant, changedDescendantCounts, impactTiers } from './model.js';
+import { emitter } from './renderer.js';
+import { tooltipHtml, hopTitle } from './tooltip.js';
 
 // ---------------------------------------------------------------------------
 // SVG layout sizes
 
-export const CODE_BTN_W = 28;
-export const MAX_CODE_LINES = 18; // taller snippets scroll inside the node
-export const CODE_LINE_H = 16;
-export const CODE_PAD = 8;
-export const CODE_MIN_W = 260;
-export const CODE_MAX_W = 640;
+const CODE_BTN_W = 28;
+const MAX_CODE_LINES = 18; // taller snippets scroll inside the node
+const CODE_LINE_H = 16;
+const CODE_PAD = 8;
+const CODE_MIN_W = 260;
+const CODE_MAX_W = 640;
 
-export const LONG_EDGE = 520; // arrows longer than this (in bundled mode) become stubs with labels
+const LONG_EDGE = 520; // arrows longer than this (in bundled mode) become stubs with labels
 
-export const LEAF_H = 28;
-export const HEADER_H = 28;
-export const PAD = 14;
-export const GAP_X = 28;
-export const GAP_Y = 56;
-export const MAX_ROW_W = 1500;
+const LEAF_H = 28;
+const HEADER_H = 28;
+const PAD = 14;
+const GAP_X = 28;
+const GAP_Y = 56;
+const MAX_ROW_W = 1500;
 
 // ---------------------------------------------------------------------------
-// Canvas elements
+// Canvas elements (set by mount)
 
-export const svg = $('svg');
-export const viewport = $('viewport');
-export const canvasEl = $('canvas');
+let svg = null;
+let viewport = null;
+let canvasEl = null;
+const events = emitter();
 
-
-
-
+const SVG_MARKUP = `<svg id="svg" tabindex="0">
+  <defs id="defs"></defs>
+  <g id="viewport">
+    <g id="layerContainers"></g>
+    <g id="layerEdges"></g>
+    <g id="layerPath"></g>
+    <g id="layerNodes"></g>
+    <g id="layerBadges"></g>
+  </g>
+</svg>`;
 
 // ---------------------------------------------------------------------------
 // Inline code: a node can be opened into a card showing its source (the text
@@ -49,8 +55,7 @@ export const canvasEl = $('canvas');
 
 let monoW = 0;
 
-
-export function codeSize(n, labelW) {
+function codeSize(n, labelW) {
   const e = S.code.get(codeKey(n));
   const lines = e && e.lines ? e.lines : [e && e.status === 'error' ? e.error || 'Source unavailable' : 'Loading…'];
   if (!monoW) {
@@ -70,7 +75,7 @@ export function codeSize(n, labelW) {
 // with a small layered (Sugiyama-style) algorithm based on the edges between
 // them. Siblings without connections are packed in a grid.
 
-export function computeLayout(vis) {
+function computeLayout(vis) {
   const box = new Map(); // id -> {w, h, x, y (relative to parent content), container}
   const visibleSet = new Set(vis.visible);
 
@@ -130,7 +135,7 @@ export function computeLayout(vis) {
   return { abs, width: top.w, height: top.h };
 }
 
-export function layered(ids, pairs, box) {
+function layered(ids, pairs, box) {
   // Left to right is the top-down layout run on boxes turned on their side:
   // ranks become columns and siblings stack vertically. It is used between
   // folders and files, where the flow of calls matters; inside a file the
@@ -151,7 +156,7 @@ export function layered(ids, pairs, box) {
   return { w: res.h, h: res.w };
 }
 
-export function sidewaysAmong(ids) {
+function sidewaysAmong(ids) {
   // True when siblings are laid out left to right: a left-to-right view and all of them folders or files.
   return S.direction === 'LR' && ids.length > 0 && ids.every(id => {
     const k = (S.nodes.get(id) || {}).kind;
@@ -159,7 +164,7 @@ export function sidewaysAmong(ids) {
   });
 }
 
-export function layeredTopDown(ids, pairs, box) {
+function layeredTopDown(ids, pairs, box) {
   // Sets box.get(id).x/y relative to the content origin; returns {w, h}.
   if (!ids.length) return { w: 0, h: 0 };
   const index = new Map(ids.map((id, i) => [id, i]));
@@ -342,27 +347,15 @@ export function layeredTopDown(ids, pairs, box) {
 // ---------------------------------------------------------------------------
 // Rendering
 
-export function layoutAndRender(viewAction) {
-  // Expanding a node (for example via Expand all) wins over showing its code.
-  for (const id of [...S.codeOpen]) if (S.expanded.has(id)) S.codeOpen.delete(id);
-  const vis = computeVisible();
+function setGraph(vis, opts) {
   const lay = computeLayout(vis);
-  S.vis = vis;
   S.layout = { vis, abs: lay.abs, width: lay.width, height: lay.height };
   render();
-  if (viewAction === 'fit' || !S.view) fitView(false);
+  if ((opts && opts.fit) || !S.view) fitView(false);
   else applyView();
-  const empty = $('empty');
-  if (!S.graph.nodes.length) {
-    empty.innerHTML = S.mode === 'diff' ? 'No C/C++ files in these revisions.' : 'No C/C++ files were found in this workspace.<br><span class="muted">Check the <code>codeGraph.include</code> and <code>codeGraph.exclude</code> settings.</span>';
-    empty.classList.remove('hidden');
-  } else if (!vis.visible.length) {
-    empty.innerHTML = S.mode === 'diff' ? 'No structural changes between these versions.' : 'Nothing to show with the current filters.';
-    empty.classList.remove('hidden');
-  } else empty.classList.add('hidden');
 }
 
-export function edgeMarkers() {
+function edgeMarkers() {
   let s = '';
   for (const k of EDGE_KINDS) {
     const hollow = k.kind === 'inherits';
@@ -374,7 +367,7 @@ export function edgeMarkers() {
   $('defs').innerHTML = s;
 }
 
-export function clipToBox(cx, cy, tx, ty, b) {
+function clipToBox(cx, cy, tx, ty, b) {
   // Point where the segment from the box center (cx,cy) toward (tx,ty) leaves box b.
   const dx = tx - cx;
   const dy = ty - cy;
@@ -387,7 +380,7 @@ export function clipToBox(cx, cy, tx, ty, b) {
   return [cx + dx * s, cy + dy * s];
 }
 
-export function anchor(b) {
+function anchor(b) {
   // Containers and code cards connect at their header so arrows do not cross their content.
   if (b.container || b.code) {
     const header = { x: b.x, y: b.y, w: b.w, h: HEADER_H };
@@ -396,7 +389,7 @@ export function anchor(b) {
   return { cx: b.x + b.w / 2, cy: b.y + b.h / 2, box: b };
 }
 
-export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /**
  * Path of an arrow between two boxes. Arrows leave and enter through the side
@@ -405,7 +398,7 @@ export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
  * instead of running from centre to centre.
  * Returns {d, x1, y1, x2, y2, mx, my, len}: path, end points, mid point and length.
  */
-export function edgeGeometry(e, abs, bend) {
+function edgeGeometry(e, abs, bend) {
   const A = abs.get(e.s);
   const B = abs.get(e.t);
   if (!A || !B) return null;
@@ -471,7 +464,7 @@ export function edgeGeometry(e, abs, bend) {
  * source, one entering the target), each ending in a label naming the other end.
  * Clicking a label jumps to that end (data-badge).
  */
-export function edgeStubs(e, g, cls, width) {
+function edgeStubs(e, g, cls, width) {
   const STUB = 30;
   const H = 20;
   const name = id => nodeLabel(S.nodes.get(id) || {});
@@ -497,7 +490,7 @@ export function edgeStubs(e, g, cls, width) {
   };
 }
 
-export function render() {
+function render() {
   edgeMarkers();
   const { vis, abs } = S.layout;
   const related = relatedSets();
@@ -632,13 +625,11 @@ export function render() {
   }
   $('layerBadges').innerHTML = badgesSvg;
   $('layerEdges').innerHTML = edgesSvg;
-  // In "selected" mode an empty canvas of arrows needs a hint, or it looks like there are none.
-  $('edgeHint').classList.toggle('hidden', !(S.edgeMode === 'selected' && vis.edges.length && !S.selected && !S.selectedEdge && !S.highlight));
   renderPath();
-  renderHighlightBar();
+  events.emit('rendered');
 }
 
-export function renderPath() {
+function renderPath() {
   // Numbered execution path (from the AI answer or a trace).
   const layer = $('layerPath');
   if (!S.highlight || !S.highlight.path || S.highlight.path.length < 1) {
@@ -689,24 +680,16 @@ export function renderPath() {
   layer.innerHTML = s + labels;
 }
 
-export function hopTitle(hop) {
-  if (hop.inferred) return 'Inferred: there is no call between these steps in the graph';
-  if (hop.returns) return 'Returns to the caller';
-  if (hop.dispatch) return 'Virtual dispatch: the call goes to a base method this one overrides';
-  if (hop.uncertain) return 'Call matched by name only';
-  return 'Call';
-}
-
 // ---------------------------------------------------------------------------
 // View transform
 
-export function applyView() {
+function applyView() {
   const v = S.view;
   viewport.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.k})`);
   canvasEl.classList.toggle('far', v.k < 0.45);
 }
 
-export function fitView(animate) {
+function fitView(animate) {
   const rect = svg.getBoundingClientRect();
   const W = rect.width || 800;
   const H = rect.height || 600;
@@ -716,7 +699,7 @@ export function fitView(animate) {
   setView(target, animate);
 }
 
-export function setView(target, animate) {
+function setView(target, animate) {
   if (!animate || !S.view) {
     S.view = target;
     applyView();
@@ -736,7 +719,7 @@ export function setView(target, animate) {
   requestAnimationFrame(step);
 }
 
-export function centerOn(id, animate) {
+function centerOn(id, animate) {
   const b = S.layout.abs.get(id);
   if (!b) return;
   const rect = svg.getBoundingClientRect();
@@ -746,7 +729,7 @@ export function centerOn(id, animate) {
   setView({ k, x: rect.width / 2 - (b.x + b.w / 2) * k, y: rect.height / 2 - (b.y + Math.min(b.h, 200) / 2) * k }, animate);
 }
 
-export function zoomAt(factor, px, py) {
+function zoomAt(factor, px, py) {
   const v = S.view;
   const k = Math.min(4, Math.max(0.04, v.k * factor));
   const f = k / v.k;
@@ -755,10 +738,10 @@ export function zoomAt(factor, px, py) {
   persist();
 }
 
-export function relayoutKeeping(anchorId) {
+function relayoutKeeping(anchorId) {
   // Re-layout while keeping the anchor node at the same screen position.
   const before = anchorId && S.layout && S.layout.abs.get(anchorId);
-  layoutAndRender(null);
+  setGraph(S.vis, { fit: false });
   const after = anchorId && S.layout.abs.get(anchorId);
   if (before && after && S.view) {
     S.view.x += (before.x - after.x) * S.view.k;
@@ -768,163 +751,109 @@ export function relayoutKeeping(anchorId) {
   }
 }
 
-
-// ---------------------------------------------------------------------------
-// Toolbar, banner, filters, legend, status
-
-
-// ---------------------------------------------------------------------------
-// Details panel
-
-
-// AI summary of the selected node (see src/ai/summaries.js). Requested a moment
-// after selection, so clicking through nodes doesn't ask for each of them.
-
-// ---------------------------------------------------------------------------
-// Change impact (see src/ai/impact.js)
-
-
-
-
-// ---------------------------------------------------------------------------
-// AI panel
-
-
-// ---------------------------------------------------------------------------
-// Search
-
-
 // ---------------------------------------------------------------------------
 // Events
 
-export function nodeIdFromEvent(ev) {
+function nodeIdFromEvent(ev) {
   const g = ev.target.closest && ev.target.closest('[data-id]');
   return g ? g.dataset.id : null;
 }
 
 let drag = null;
-svg.addEventListener('pointerdown', ev => {
-  if (ev.button !== 0 || !S.view) return;
-  if (ev.target.closest && ev.target.closest('.codecard')) return; // code cards scroll and select text
-  drag = { x: ev.clientX, y: ev.clientY, vx: S.view.x, vy: S.view.y, moved: false, target: ev.target, pointerId: ev.pointerId };
-});
-svg.addEventListener('pointermove', ev => {
-  if (drag) {
-    const dx = ev.clientX - drag.x;
-    const dy = ev.clientY - drag.y;
-    if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
-      drag.moved = true;
-      try {
-        svg.setPointerCapture(drag.pointerId);
-      } catch {
-        // pointer already released
-      }
-    }
-    if (drag.moved) {
-      S.view.x = drag.vx + dx;
-      S.view.y = drag.vy + dy;
-      applyView();
-      canvasEl.classList.add('panning');
-    }
-    hideTooltip();
-    return;
-  }
-  showTooltipFor(ev);
-});
-svg.addEventListener('pointerup', ev => {
-  if (!drag) return;
-  const wasDrag = drag.moved;
-  const target = drag.target;
-  drag = null;
-  canvasEl.classList.remove('panning');
-  if (wasDrag) {
-    persist();
-    return;
-  }
-  ev = { target, ctrlKey: ev.ctrlKey, metaKey: ev.metaKey };
-  const bd = ev.target.closest && ev.target.closest('[data-badge]');
-  if (bd) {
-    reveal(bd.dataset.badge);
-    return;
-  }
-  const cb = ev.target.closest && ev.target.closest('[data-code]');
-  if (cb) {
-    toggleCode(cb.dataset.code);
-    if (S.selected === cb.dataset.code) renderDetails();
-    return;
-  }
-  const tg = ev.target.closest && ev.target.closest('[data-toggle]');
-  if (tg) {
-    toggle(tg.dataset.toggle);
-    if (S.selected === tg.dataset.toggle) renderDetails();
-    return;
-  }
-  const id = nodeIdFromEvent(ev);
-  if (id) {
-    if (ev.ctrlKey || ev.metaKey) openSource(id);
-    else {
-      select(id);
-      switchTab('details', true);
-    }
-    return;
-  }
-  const eg = ev.target.closest && ev.target.closest('[data-edge]');
-  if (eg) {
-    S.selectedEdge = eg.dataset.edge;
-    S.selected = null;
-    render();
-    renderDetails();
-    switchTab('details', true);
-    return;
-  }
-  if (S.selected || S.selectedEdge) {
-    S.selected = null;
-    S.selectedEdge = null;
-    persist();
-    render();
-    renderDetails();
-  }
-});
-svg.addEventListener('click', ev => {
-  // A line of an open code card: open that line in the editor.
-  const line = ev.target.closest && ev.target.closest('.cl[data-line]');
-  if (!line || window.getSelection().toString()) return;
-  const id = nodeIdFromEvent(ev);
-  const n = id && S.nodes.get(id);
-  const entry = n && S.code.get(codeKey(n));
-  if (entry && entry.file) vscode.postMessage({ type: 'open', file: entry.file, line: +line.dataset.line, side: codeSide(n), preserveFocus: false });
-});
-svg.addEventListener('dblclick', ev => {
-  const id = nodeIdFromEvent(ev);
-  if (ev.target.closest && ev.target.closest('.codecard')) return;
-  if (id && !(ev.target.closest && (ev.target.closest('[data-toggle]') || ev.target.closest('[data-code]')))) {
-    if (kids(id).length) toggle(id);
-    else openSource(id);
-    renderDetails();
-  }
-});
-svg.addEventListener(
-  'wheel',
-  ev => {
-    // Over a scrollable code card the wheel scrolls the code; Ctrl+wheel still zooms.
-    const card = ev.target.closest && ev.target.closest('.codecard');
-    if (card && !ev.ctrlKey && card.scrollHeight > card.clientHeight) return;
-    ev.preventDefault();
-    const rect = svg.getBoundingClientRect();
-    if (ev.ctrlKey || Math.abs(ev.deltaY) >= Math.abs(ev.deltaX)) {
-      const delta = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
-      zoomAt(Math.exp(-delta * (ev.ctrlKey ? 0.01 : 0.0015)), ev.clientX - rect.left, ev.clientY - rect.top);
-    } else {
-      S.view.x -= ev.deltaX;
-      applyView();
-    }
-    hideTooltip();
-  },
-  { passive: false }
-);
-svg.addEventListener('pointerleave', hideTooltip);
 
-export function showTooltipFor(ev) {
+function listen() {
+  svg.addEventListener('pointerdown', ev => {
+    if (ev.button !== 0 || !S.view) return;
+    if (ev.target.closest && ev.target.closest('.codecard')) return; // code cards scroll and select text
+    drag = { x: ev.clientX, y: ev.clientY, vx: S.view.x, vy: S.view.y, moved: false, target: ev.target, pointerId: ev.pointerId };
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (drag) {
+      const dx = ev.clientX - drag.x;
+      const dy = ev.clientY - drag.y;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+        drag.moved = true;
+        try {
+          svg.setPointerCapture(drag.pointerId);
+        } catch {
+          // pointer already released
+        }
+      }
+      if (drag.moved) {
+        S.view.x = drag.vx + dx;
+        S.view.y = drag.vy + dy;
+        applyView();
+        canvasEl.classList.add('panning');
+      }
+      hideTooltip();
+      return;
+    }
+    showTooltipFor(ev);
+  });
+  svg.addEventListener('pointerup', ev => {
+    if (!drag) return;
+    const wasDrag = drag.moved;
+    const target = drag.target;
+    drag = null;
+    canvasEl.classList.remove('panning');
+    if (wasDrag) {
+      persist();
+      return;
+    }
+    const closest = sel => target.closest && target.closest(sel);
+    const bd = closest('[data-badge]');
+    if (bd) return events.emit('reveal', bd.dataset.badge);
+    const cb = closest('[data-code]');
+    if (cb) return events.emit('toggleCode', cb.dataset.code);
+    const tg = closest('[data-toggle]');
+    if (tg) return events.emit('toggle', tg.dataset.toggle);
+    const id = nodeIdFromEvent({ target });
+    if (id) return events.emit(ev.ctrlKey || ev.metaKey ? 'openSource' : 'select', id);
+    const eg = closest('[data-edge]');
+    if (eg) return events.emit('edgeSelect', eg.dataset.edge);
+    events.emit('background');
+  });
+  svg.addEventListener('click', ev => {
+    // A line of an open code card: open that line in the editor.
+    const line = ev.target.closest && ev.target.closest('.cl[data-line]');
+    if (!line || window.getSelection().toString()) return;
+    const id = nodeIdFromEvent(ev);
+    if (id) events.emit('openLine', id, +line.dataset.line);
+  });
+  svg.addEventListener('dblclick', ev => {
+    const id = nodeIdFromEvent(ev);
+    if (ev.target.closest && ev.target.closest('.codecard')) return;
+    if (id && !(ev.target.closest && (ev.target.closest('[data-toggle]') || ev.target.closest('[data-code]')))) events.emit('activate', id);
+  });
+  svg.addEventListener(
+    'wheel',
+    ev => {
+      // Over a scrollable code card the wheel scrolls the code; Ctrl+wheel still zooms.
+      const card = ev.target.closest && ev.target.closest('.codecard');
+      if (card && !ev.ctrlKey && card.scrollHeight > card.clientHeight) return;
+      ev.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      if (ev.ctrlKey || Math.abs(ev.deltaY) >= Math.abs(ev.deltaX)) {
+        const delta = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
+        zoomAt(Math.exp(-delta * (ev.ctrlKey ? 0.01 : 0.0015)), ev.clientX - rect.left, ev.clientY - rect.top);
+      } else {
+        S.view.x -= ev.deltaX;
+        applyView();
+      }
+      hideTooltip();
+    },
+    { passive: false }
+  );
+  svg.addEventListener('pointerleave', hideTooltip);
+
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => S.view && applyView(), 100);
+  });
+}
+
+function showTooltipFor(ev) {
   const tip = $('tooltip');
   if (ev.target.closest && ev.target.closest('.codecard')) return hideTooltip();
   const id = nodeIdFromEvent(ev);
@@ -941,21 +870,42 @@ export function showTooltipFor(ev) {
   tip.style.left = x + 'px';
   tip.style.top = y + 'px';
 }
-export function hideTooltip() {
+function hideTooltip() {
   $('tooltip').classList.add('hidden');
 }
 
-$('fit').onclick = () => fitView(true);
-$('zoomIn').onclick = () => {
-  const r = svg.getBoundingClientRect();
-  zoomAt(1.25, r.width / 2, r.height / 2);
+// ---------------------------------------------------------------------------
+// The renderer (see renderer.js)
+
+const drawn = (layer, attr, cls) => [...new Set([...svg.querySelectorAll(`#${layer} .${layer === 'layerNodes' ? 'node' : 'edge'}${cls ? '.' + cls : ''}`)].map(g => g.dataset[attr]))];
+
+export const svgRenderer = {
+  mount(container) {
+    container.insertAdjacentHTML('afterbegin', SVG_MARKUP);
+    svg = $('svg');
+    viewport = $('viewport');
+    canvasEl = container;
+    listen();
+  },
+  setGraph,
+  open: relayoutKeeping,
+  close: relayoutKeeping,
+  setCodeCard: relayoutKeeping,
+  refreshStyle() {
+    if (S.layout) render();
+  },
+  centerOn,
+  fit: fitView,
+  zoom(factor) {
+    const r = svg.getBoundingClientRect();
+    zoomAt(factor, r.width / 2, r.height / 2);
+  },
+  focus() {
+    svg.focus();
+  },
+  on: events.on,
+  debug: {
+    nodes: cls => drawn('layerNodes', 'id', cls),
+    edges: cls => drawn('layerEdges', 'edge', cls)
+  }
 };
-$('zoomOut').onclick = () => {
-  const r = svg.getBoundingClientRect();
-  zoomAt(0.8, r.width / 2, r.height / 2);
-};
-let resizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => S.view && applyView(), 100);
-});

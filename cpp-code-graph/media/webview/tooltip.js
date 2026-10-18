@@ -1,4 +1,4 @@
-// Tooltip text for a node or an edge. The renderer decides where it is shown.
+// Tooltip text for nodes, edges and path hops. The renderer decides where it is shown.
 
 import { KIND_INFO, edgeVerb } from './constants.js';
 import { esc } from './util.js';
@@ -23,4 +23,13 @@ export function tooltipHtml(id, edgeKey) {
     }
   }
   return html;
+}
+
+/** The tooltip of a hop of the numbered execution path. */
+export function hopTitle(hop) {
+  if (hop.inferred) return 'Inferred: there is no call between these steps in the graph';
+  if (hop.returns) return 'Returns to the caller';
+  if (hop.dispatch) return 'Virtual dispatch: the call goes to a base method this one overrides';
+  if (hop.uncertain) return 'Call matched by name only';
+  return 'Call';
 }

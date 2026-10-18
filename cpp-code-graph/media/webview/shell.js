@@ -35,16 +35,6 @@ app.innerHTML = `
 <div id="banner" class="banner hidden"></div>
 <div class="main">
   <div class="canvas" id="canvas">
-    <svg id="svg" tabindex="0">
-      <defs id="defs"></defs>
-      <g id="viewport">
-        <g id="layerContainers"></g>
-        <g id="layerEdges"></g>
-        <g id="layerPath"></g>
-        <g id="layerNodes"></g>
-        <g id="layerBadges"></g>
-      </g>
-    </svg>
     <div id="hlBar" class="hlbar hidden"></div>
     <div id="edgeHint" class="edgehint hidden">Select a node to see its connections, or choose <b>Bundled</b> / <b>All</b> under Arrows.</div>
     <div id="empty" class="empty hidden"></div>
