@@ -1,11 +1,12 @@
-// Bundles the webview: media/webview/main.js -> media/dist/graph.js (one IIFE script).
+// Bundles the webview: media/main.js -> media/dist/graph.js (one IIFE script).
+// (The previous webview, media/webview/main.js, is no longer built.)
 // Usage: node scripts/build-webview.js [--watch] [--minify]
 const path = require('path');
 const esbuild = require('esbuild');
 
 const root = path.join(__dirname, '..');
 const options = {
-  entryPoints: [path.join(root, 'media', 'webview', 'main.js')],
+  entryPoints: [path.join(root, 'media', 'main.js')],
   outfile: path.join(root, 'media', 'dist', 'graph.js'),
   bundle: true,
   format: 'iife',

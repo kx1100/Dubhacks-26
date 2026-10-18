@@ -15,7 +15,8 @@
 // - Compare: the graph of two commits, colored by what was added, removed or changed.
 
 import cytoscape from 'cytoscape';
-import { highlightLines } from './highlight.js';
+// highlight.js is loaded by its own <script> tag (src/panel.ts) and sets window.CodeHighlight.
+const { highlightLines } = /** @type {any} */ (window).CodeHighlight;
 import { arrangeChildren, growInPlace, registerLayouts, runLayout, undoMoves } from './layout.js';
 
 registerLayouts(cytoscape);
@@ -825,7 +826,7 @@ cards.addEventListener('click', (ev) => {
     if (line) {
         const code = state.code.get(id);
         const n = state.byId.get(id);
-        send({ type: 'open', file: code?.file || codeRange(n)?.file || '', line: Number(line), side: sideOf(n) });
+        send({ type: 'openLocation', file: code?.file || codeRange(n)?.file || '', line: Number(line) });
         return;
     }
     select(id);
@@ -1017,7 +1018,7 @@ function openSource(/** @type {string} */ id) {
         return;
     }
     const r = codeRange(n);
-    if (r) send({ type: 'open', file: r.file, line: r.start, side: sideOf(n) });
+    if (r) send({ type: 'openLocation', file: r.file, line: r.start });
 }
 
 // One click on a file or class opens or closes it; one click on a symbol
@@ -1312,7 +1313,7 @@ function renderSelection() {
 /** @param {Extract<ToWebviewMessage, {type: 'summary'}>} m */
 function receiveSummary(m) {
     if (m.cancelled) state.summaries.delete(m.id); // asked again on the next selection
-    else if (m.summary) state.summaries.set(m.id, { status: 'ready', text: m.summary, model: m.model });
+    else if (m.summary) state.summaries.set(m.id, { status: 'ready', text: m.summary.purpose, model: m.model });
     else state.summaries.set(m.id, { status: 'none' });
     if (m.id === state.selected) renderSelection();
 }
@@ -1374,10 +1375,11 @@ function commonFolder(/** @type {string[]} */ paths) {
 
 /** @param {Extract<ToWebviewMessage, {type: 'graph'}>} m */
 function loadGraph(m) {
-    const data = m.graph;
-    const modeChanged = state.mode !== m.mode;
-    state.mode = m.mode;
-    state.compare = m.mode === 'diff' ? m.compare ?? state.compare : null;
+    const data = m.data;
+    const mode = m.mode || 'workspace';
+    const modeChanged = state.mode !== mode;
+    state.mode = mode;
+    state.compare = mode === 'diff' ? m.compare ?? state.compare : null;
     state.data = data;
     state.byId = new Map(data.nodes.map((n) => [n.id, n]));
     state.childCount = new Map();
@@ -1416,7 +1418,7 @@ function loadGraph(m) {
 /** Toolbar in compare mode: the two versions and how much changed. */
 function renderCompare() {
     const diff = state.mode === 'diff';
-    $('compare').classList.toggle('hidden', diff);
+    $('compare').classList.add('hidden'); // the extension has no compare command any more
     $('exitCompare').classList.toggle('hidden', !diff);
     const info = $('compareInfo');
     info.classList.toggle('hidden', !diff);
@@ -1434,11 +1436,14 @@ window.addEventListener('message', (event) => {
         case 'graph':
             loadGraph(m);
             break;
-        case 'reveal':
-            focusNode(m.id);
+        case 'focus':
+            focusNode(m.nodeId);
             break;
-        case 'status':
-            setStatus(m.text, m.error ? 'error' : undefined, !!m.busy);
+        case 'loading':
+            setStatus(m.message, undefined, true);
+            break;
+        case 'error':
+            setStatus(m.message, 'error', false);
             break;
         case 'source':
             receiveCode(m);

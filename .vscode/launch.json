@@ -6,7 +6,7 @@
       "type": "extensionHost",
       "request": "launch",
       "preLaunchTask": "build",
-      "args": ["--new-window", "--extensionDevelopmentPath=${workspaceFolder}/cpp-code-graph", "${workspaceFolder}/cpp-code-graph/sample"]
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}/cpp-code-graph", "${workspaceFolder}/cpp-code-graph/sample"]
     }
   ]
 }
