@@ -19,7 +19,7 @@
   --cg-typedef: #9cdcfe;
 
   /* edges */
-  --cg-include: #8c8c8c;
+  --cg-include: #9ccc65;
   --cg-pair: #d18616;
   --cg-proto: #b180d7;
   --cg-type-use: #e2a03f;
@@ -48,7 +48,7 @@ body.vscode-light {
   --cg-type: #b36b00;
   --cg-enum: #8a7000;
   --cg-typedef: #2b6cb0;
-  --cg-include: #6e6e6e;
+  --cg-include: #4c8c1a;
   --cg-pair: #c15d00;
   --cg-proto: #7d4fb3;
   --cg-type-use: #b36b00;
