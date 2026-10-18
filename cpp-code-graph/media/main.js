@@ -8,6 +8,8 @@
 //   functions and types; clicking again closes it.
 // - Clicking a function or type opens its code in a card on the graph; click
 //   it again (or ✕) to close. Double-click opens it in the editor.
+// - Ctrl+click folds an open file or class back up, with everything open
+//   inside it, or closes a code card. Nodes can be dragged around.
 // - Arrows: "Selected" (only the selected node's), "Bundled" (the default: one
 //   arrow per pair of files with a count, plus exact arrows inside a file and
 //   for the selection) or "All".
@@ -1066,6 +1068,22 @@ function openSource(/** @type {string} */ id) {
     if (r) send({ type: 'openLocation', file: r.file, line: r.start });
 }
 
+/**
+ * Ctrl+click: fold an open file or class all the way back into one node,
+ * closing the boxes and code cards inside it too (so opening it again starts
+ * compact), or close a code card.
+ */
+function compact(/** @type {string} */ id) {
+    if (isBox(id) && state.expanded.has(id)) {
+        for (const n of state.data?.nodes ?? []) {
+            if (!boxesAround(n.id).includes(id)) continue;
+            state.expanded.delete(n.id);
+            state.openCode.delete(n.id);
+        }
+        toggle(id);
+    } else if (state.openCode.has(id)) toggleCode(id, false);
+}
+
 // One click on a file or class opens or closes it; one click on a symbol
 // opens or closes its code. Neither happens when the click turns into a double click,
 // which opens the source in the editor instead.
@@ -1076,6 +1094,11 @@ cy.on('tap', 'node', (evt) => {
     select(id);
     switchTab('details', true);
     clearTimeout(tapTimer);
+    const click = /** @type {MouseEvent | undefined} */ (evt.originalEvent);
+    if (click?.ctrlKey || click?.metaKey) {
+        compact(id);
+        return;
+    }
     tapTimer = setTimeout(() => {
         if (isBox(id)) toggle(id);
         else toggleCode(id);

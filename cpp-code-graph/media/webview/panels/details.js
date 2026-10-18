@@ -154,6 +154,8 @@ export function renderDetails() {
         <li><b>Click</b> a node to see what it is and how it connects.</li>
         <li>Clicking a file or class also opens it; clicking a function shows its code.</li>
         <li><b>Double-click</b> to jump to its source.</li>
+        <li><b>Ctrl+click</b> an open file or class to fold it back up, with everything open inside it.</li>
+        <li><b>Drag</b> a node to move it.</li>
         <li>Scroll to zoom, drag the background to pan.</li>
       </ul>
       ${entryPoints()}
