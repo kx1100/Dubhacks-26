@@ -459,7 +459,7 @@ export class GraphPanel {
         const nonce = crypto.randomBytes(16).toString('base64');
         const js = webview.asWebviewUri(vscode.Uri.joinPath(media, 'dist', 'graph.js'));
         const highlightJs = webview.asWebviewUri(vscode.Uri.joinPath(media, 'highlight.js'));
-        const css = webview.asWebviewUri(vscode.Uri.joinPath(media, 'graph.css'));
+        const css = webview.asWebviewUri(vscode.Uri.joinPath(media, 'style.css'));
         const csp = [
             "default-src 'none'",
             `img-src ${webview.cspSource} data:`,

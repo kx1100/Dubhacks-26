@@ -1373,9 +1373,41 @@ function commonFolder(/** @type {string[]} */ paths) {
     return parts.join('/');
 }
 
+// The extension's graph (src/types.ts) names things differently from this webview.
+const EDGE_KIND = { include: 'includes', pair: 'pairs', call: 'calls', 'type-use': 'uses' };
+const DIFF_STATUS = { added: 'added', removed: 'removed', changed: 'modified' };
+
+/** Converts the extension's GraphData to the shape this webview reads. */
+function adaptGraph(/** @type {any} */ data) {
+    const nodes = data.nodes
+        .filter((/** @type {any} */ n) => n.kind !== 'dir') // folders aren't drawn; files are the top level
+        .map((/** @type {any} */ n) => {
+            const out = { ...n, name: n.name ?? n.label, status: n.status ?? DIFF_STATUS[n.diff] };
+            if (n.kind === 'file') {
+                out.header = n.header ?? n.fileRole === 'header';
+                delete out.parent;
+            } else if (n.kind === 'prototype') {
+                out.kind = 'function'; // a declaration with no body in the workspace (drawn dashed)
+            } else if (n.kind === 'function' && !n.defFile) {
+                Object.assign(out, { defFile: n.file, defLine: n.line, defEndLine: n.endLine });
+            }
+            return out;
+        });
+    const edges = data.edges
+        .filter((/** @type {any} */ e) => e.kind !== 'proto-def')
+        .map((/** @type {any} */ e) => ({
+            ...e,
+            s: e.s ?? e.source,
+            t: e.t ?? e.target,
+            kind: EDGE_KIND[e.kind] ?? e.kind,
+            status: e.status ?? DIFF_STATUS[e.diff],
+        }));
+    return { ...data, nodes, edges };
+}
+
 /** @param {Extract<ToWebviewMessage, {type: 'graph'}>} m */
 function loadGraph(m) {
-    const data = m.data;
+    const data = adaptGraph(m.data);
     const mode = m.mode || 'workspace';
     const modeChanged = state.mode !== mode;
     state.mode = mode;
