@@ -8,7 +8,6 @@ export const saved = vscode.getState() || {};
 export const S = {
   mode: 'workspace',
   title: '',
-  compare: null,
   graph: null,
   nodes: new Map(),
   children: new Map(), // effective tree
@@ -25,7 +24,6 @@ export const S = {
   showFields: saved.showFields !== undefined ? saved.showFields : true,
   showNamespaces: saved.showNamespaces !== undefined ? saved.showNamespaces : true,
   showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,
-  changesOnly: true,
   focusMode: saved.focusMode !== undefined ? saved.focusMode : true,
   preset: PRESETS[saved.preset] || saved.preset === 'custom' ? saved.preset : 'structure', // which view preset is active
   edgeMode: EDGE_MODES.includes(saved.edgeMode) ? saved.edgeMode : 'selected', // which arrows are drawn

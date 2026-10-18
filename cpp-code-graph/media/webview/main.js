@@ -7,7 +7,7 @@ import { EDGE_MODES, PRESETS } from './constants.js';
 import { vscode, S, persist } from './state.js';
 import { canShowCode, codeKey, codeSide, requestSource, onSource, refreshCode } from './code.js';
 import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, computeVisible, nodeLabel, descendantsOf } from './model.js';
-import { renderViewControls, renderBanner, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
+import { renderViewControls, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
 import { renderDetails } from './panels/details.js';
 import { onSummary } from './panels/summary.js';
 import { requestImpact, onImpact, renderImpact } from './panels/impact.js';
@@ -21,18 +21,17 @@ renderer.mount($('canvas'));
 // ---------------------------------------------------------------------------
 // Loading a graph
 
-export function loadGraph(graph, mode, title, compare) {
-  const fresh = setGraph(graph, mode, title, compare);
+export function loadGraph(graph, mode, title) {
+  const fresh = setGraph(graph, mode, title);
   $('title').textContent = S.title || 'Code Graph';
   $('title').title = S.title;
   refreshCode();
-  renderBanner();
   renderFilters();
   renderViewControls();
   renderStats();
   layoutAndRender(fresh ? 'fit' : S.view ? null : 'fit');
   renderDetails();
-  setStatus(mode === 'diff' ? 'Comparison ready. Green = added, red = removed, yellow = modified.' : 'Ready. Double-click a node to expand it, Ctrl+click to open its source.');
+  setStatus('Ready. Double-click a node to expand it, Ctrl+click to open its source.');
 }
 
 // ---------------------------------------------------------------------------
@@ -45,10 +44,10 @@ function updateVisible() {
   S.vis = computeVisible();
   const empty = $('empty');
   if (!S.graph.nodes.length) {
-    empty.innerHTML = S.mode === 'diff' ? 'No C/C++ files in these revisions.' : 'No C/C++ files were found in this workspace.<br><span class="muted">Check the <code>codeGraph.include</code> and <code>codeGraph.exclude</code> settings.</span>';
+    empty.innerHTML = 'No C/C++ files were found in this workspace.<br><span class="muted">Check the <code>codeGraph.include</code> and <code>codeGraph.exclude</code> settings.</span>';
     empty.classList.remove('hidden');
   } else if (!S.vis.visible.length) {
-    empty.innerHTML = S.mode === 'diff' ? 'No structural changes between these versions.' : 'Nothing to show with the current filters.';
+    empty.innerHTML = 'Nothing to show with the current filters.';
     empty.classList.remove('hidden');
   } else empty.classList.add('hidden');
 }
@@ -132,14 +131,8 @@ export function reveal(id, opts) {
   // Expand ancestors so that id becomes visible, select it and center on it.
   let target = nearestInTree(id);
   if (!target) {
-    // Hidden by the "changes only" filter or a kind filter; relax filters.
-    if (S.mode === 'diff' && S.changesOnly) {
-      S.changesOnly = false;
-      rebuildTree();
-      renderBanner();
-    }
-    target = nearestInTree(id);
-    if (!target) return;
+    // Hidden by a kind filter.
+    return;
   }
   for (const a of ancestors(target)) S.expanded.add(a);
   S.selected = target;
@@ -349,7 +342,6 @@ document.addEventListener('click', ev => {
     renderHistory();
   }
 });
-$('compareBtn').onclick = () => vscode.postMessage({ type: 'compare' });
 $('refreshBtn').onclick = () => {
   setStatus('Rescanning…', true);
   vscode.postMessage({ type: 'refresh' });
@@ -435,8 +427,7 @@ window.addEventListener('message', ev => {
       // The code may have changed: check again (the extension answers from its cache when it hasn't).
       for (const e of S.summaries.values()) e.stale = true;
       if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
-      if (m.compare) S.compare = m.compare;
-      loadGraph(m.graph, m.mode, m.title, m.compare);
+      loadGraph(m.graph, m.mode, m.title);
       renderSuggestions();
       break;
     case 'status':

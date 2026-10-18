@@ -13,7 +13,7 @@ export const INITIAL_BUDGET = 45;
  * and rebuilds the tree. Returns true when the view starts fresh (a new mode
  * with no saved state to restore), so the caller fits it.
  */
-export function setGraph(graph, mode, title, compare) {
+export function setGraph(graph, mode, title) {
   const modeChanged = S.mode !== mode || !S.graph;
   const firstLoad = !S.graph;
   // The AI layer's inferred links are not shown; only its concept tags are.
@@ -21,7 +21,6 @@ export function setGraph(graph, mode, title, compare) {
   S.graph = graph;
   S.mode = mode;
   S.title = title || '';
-  S.compare = compare || (mode === 'diff' ? S.compare : null);
   S.nodes = new Map(graph.nodes.map(n => [n.id, n]));
   S.concepts = graph.concepts || {};
   S.semantic = graph.semantic || null;
@@ -51,31 +50,9 @@ export function setGraph(graph, mode, title, compare) {
   return fresh;
 }
 
-export function changedKeepSet() {
-  // Nodes worth showing in "changes only" mode.
-  const keep = new Set();
-  const addWithAncestors = id => {
-    let cur = id;
-    while (cur && !keep.has(cur)) {
-      keep.add(cur);
-      cur = (S.nodes.get(cur) || {}).parent;
-    }
-  };
-  for (const n of S.graph.nodes) if (n.status) addWithAncestors(n.id);
-  for (const e of S.graph.edges) {
-    if (e.status) {
-      addWithAncestors(e.s);
-      addWithAncestors(e.t);
-    }
-  }
-  return keep;
-}
-
 export function rebuildTree() {
-  const keep = S.mode === 'diff' && S.changesOnly ? changedKeepSet() : null;
   const transparent = n => n.kind === 'namespace' && !S.showNamespaces;
   const kindHidden = n => !S.showFields && (n.kind === 'field' || n.kind === 'variable');
-  S.diffHidden = id => keep && !keep.has(id);
   S.kindHidden = id => {
     const n = S.nodes.get(id);
     return n ? kindHidden(n) : false;
@@ -84,7 +61,7 @@ export function rebuildTree() {
   S.parentOf = new Map();
   S.roots = [];
   for (const n of S.graph.nodes) {
-    if (transparent(n) || kindHidden(n) || (keep && !keep.has(n.id))) continue;
+    if (transparent(n) || kindHidden(n)) continue;
     let p = n.parent;
     while (p && S.nodes.has(p) && transparent(S.nodes.get(p))) p = S.nodes.get(p).parent;
     if (p && !S.nodes.has(p)) p = null;
@@ -139,7 +116,6 @@ export function nearestInTree(id) {
   // For nodes filtered out by kind (e.g. fields), use the closest shown ancestor.
   let cur = id;
   while (cur && !inTree(cur)) {
-    if (S.diffHidden(cur)) return null;
     cur = (S.nodes.get(cur) || {}).parent;
   }
   return cur || null;
@@ -147,17 +123,6 @@ export function nearestInTree(id) {
 
 export function initialExpansion() {
   S.expanded = new Set();
-  if (S.mode === 'diff') {
-    // Reveal changed entities, as long as the result stays readable.
-    const changed = S.graph.nodes.filter(n => n.status && n.kind !== 'dir' && inTree(n.id));
-    const leafish = changed.filter(n => n.kind !== 'file' && n.kind !== 'namespace');
-    if (leafish.length <= 60) {
-      for (const n of leafish) for (const a of ancestors(n.id)) S.expanded.add(a);
-      return;
-    }
-    for (const n of changed) for (const a of ancestors(n.id)) if (S.nodes.get(a).kind === 'dir') S.expanded.add(a);
-    return;
-  }
   openLevels(['dir', 'file', 'namespace'], INITIAL_BUDGET);
   // A single root folder is always worth opening.
   if (S.roots.length === 1) S.expanded.add(S.roots[0]);
@@ -196,7 +161,7 @@ export function applyPresetSettings(name) {
 
 export function presetExpansion(name) {
   const p = PRESETS[name];
-  if (!p || !p.expand || S.mode === 'diff') return initialExpansion();
+  if (!p || !p.expand) return initialExpansion();
   S.expanded = new Set();
   openLevels(p.expand, p.budget);
   if (S.roots.length === 1) S.expanded.add(S.roots[0]);

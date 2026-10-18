@@ -26,7 +26,6 @@ export function contextNode() {
 export function renderSuggestions() {
   const el = $('suggestions');
   const list = SUGGESTIONS.slice();
-  if (S.mode === 'diff') list.unshift(['What changed', 'Summarize what changed between these commits and why it matters']);
   const n = S.selected && S.nodes.get(S.selected);
   if (n) list.push([`Explain ${n.name}`, `Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask', n.id]);
   const shown = list.length > 3 ? list.slice(0, 2).concat(list.slice(-1)) : list;

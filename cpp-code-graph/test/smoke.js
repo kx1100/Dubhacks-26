@@ -82,8 +82,9 @@ const workspaceStore = new Map();
 const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname, '..')), workspaceState: { get: k => workspaceStore.get(k), update: async (k, v) => workspaceStore.set(k, v) } };
 (async () => {
   ext.activate(context);
-  const expected = ['codeGraph.open', 'codeGraph.refresh', 'codeGraph.revealInGraph', 'codeGraph.compareCommits', 'codeGraph.ask'];
+  const expected = ['codeGraph.open', 'codeGraph.refresh', 'codeGraph.revealInGraph', 'codeGraph.ask'];
   for (const c of expected) if (!commands[c]) throw new Error('missing command ' + c);
+  if (commands['codeGraph.compareCommits']) throw new Error('compare commits should be gone');
   await commands['codeGraph.open']();
   await onMessage({ type: 'ready' });
   await new Promise(r => setTimeout(r, 50));
@@ -301,7 +302,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   const lg = posted.filter(m => m.type === 'graph').pop();
   if (!lg || lg.graph.edges.filter(e => e.kind === 'semantic').length !== 2 || !lg.graph.concepts[renderId] || lg.graph.semantic.edges !== 2) throw new Error('layer not in the posted graph');
   if (posted.filter(m => m.type === 'semanticBuilding').map(m => m.busy).join() !== 'true,false') throw new Error('busy state not posted');
-  if (!/2 inferred links/.test(infos.pop())) throw new Error('no summary message');
+  if (!/concepts? tagged/.test(infos.pop())) throw new Error('no summary message');
   // The workspace graph itself is not changed: impact and summaries see only the code's relationships.
   if (g.graph.edges.some(e => e.kind === 'semantic')) throw new Error('semantic edges leaked into the workspace graph');
   // A second build asks nothing.

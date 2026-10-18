@@ -15,7 +15,6 @@ const { predictImpact, checkPrediction, RELATION_LABELS, CHANGE_TYPES } = requir
 const { checkWithModel } = require('./ai/impactCheck');
 const { buildSemanticLayer, currentLayer } = require('./ai/semantic');
 
-const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
 const DEFAULT_SNIPPET_LINES = 30; // used when a node has no known end line
 const HISTORY_KEY = 'codeGraph.aiHistory';
@@ -33,7 +32,6 @@ class GraphPanel {
     this.panel = null;
     this.ready = false;
     this.pending = [];
-    this.compare = null; // {root, base, target, baseLabel, targetLabel, graph}
     this.aiCancel = null;
     this.summaryCancel = null;
     this.impactCancel = null;
@@ -78,7 +76,6 @@ class GraphPanel {
     if (!this.panel) return;
     if (!silent) this.post({ type: 'status', text: 'Scanning C/C++ files…', busy: true });
     const graph = await this.index.scan();
-    if (this.compare) return; // the user switched to a comparison meanwhile
     this.post({ type: 'graph', mode: 'workspace', graph: this.withSemantic(graph), title: graph.title });
     if (graph.stats.truncated) {
       this.post({ type: 'status', text: `Only the first ${graph.stats.maxFiles} files were analyzed (codeGraph.maxFiles).` });
@@ -90,29 +87,17 @@ class GraphPanel {
       case 'ready':
         this.ready = true;
         for (const p of this.pending.splice(0)) this.panel.webview.postMessage(p);
-        if (this.compare) this.post({ type: 'graph', mode: 'diff', graph: this.compare.graph, title: this.compare.title });
-        else if (this.index.graph) this.post({ type: 'graph', mode: 'workspace', graph: this.withSemantic(this.index.graph), title: this.index.graph.title });
+        if (this.index.graph) this.post({ type: 'graph', mode: 'workspace', graph: this.withSemantic(this.index.graph), title: this.index.graph.title });
         else await this.refreshWorkspace();
         this.postHistory();
         break;
       case 'open':
         await this.openSource(m);
         break;
-      case 'openDiff':
-        await this.openFileDiff(m.file);
-        break;
       case 'getSource':
         await this.sendSource(m);
         break;
       case 'refresh':
-        if (this.compare) await this.runCompare(this.compare.base, this.compare.target);
-        else await this.refreshWorkspace();
-        break;
-      case 'compare':
-        await this.pickAndCompare();
-        break;
-      case 'exitCompare':
-        this.compare = null;
         await this.refreshWorkspace();
         break;
       case 'ask':
@@ -147,15 +132,12 @@ class GraphPanel {
 
   // ---- source navigation ---------------------------------------------------
 
-  uriFor(file, side) {
-    if (!this.compare) return this.index.uriFor(file);
-    const rev = side === 'base' ? this.compare.base : this.compare.target;
-    if (rev === git.WORKTREE) return vscode.Uri.file(path.join(this.compare.root, file));
-    return gitUri(this.compare.root, rev, file);
+  uriFor(file) {
+    return this.index.uriFor(file);
   }
 
   async openSource(m) {
-    const uri = this.uriFor(m.file, m.side);
+    const uri = this.uriFor(m.file);
     if (!uri) return;
     const line = Math.max(0, (m.line || 1) - 1);
     const doc = await vscode.workspace.openTextDocument(uri);
@@ -171,7 +153,7 @@ class GraphPanel {
   async sendSource(m) {
     const reply = { type: 'source', reqId: m.reqId };
     try {
-      const uri = this.uriFor(m.file, m.side);
+      const uri = this.uriFor(m.file);
       if (!uri) throw new Error('Source is not available.');
       const doc = await vscode.workspace.openTextDocument(uri);
       const first = Math.min(Math.max(1, m.start | 0 || 1), Math.max(1, doc.lineCount));
@@ -185,15 +167,6 @@ class GraphPanel {
     }
   }
 
-  async openFileDiff(file) {
-    if (!this.compare) return;
-    const left = gitUri(this.compare.root, this.compare.base, file);
-    const right = this.compare.target === git.WORKTREE ? vscode.Uri.file(path.join(this.compare.root, file)) : gitUri(this.compare.root, this.compare.target, file);
-    await vscode.commands.executeCommand('vscode.diff', left, right, `${path.basename(file)} (${this.compare.baseLabel} ↔ ${this.compare.targetLabel})`, {
-      viewColumn: vscode.ViewColumn.One
-    });
-  }
-
   async revealAtCursor() {
     const editor = vscode.window.activeTextEditor;
     this.show();
@@ -204,67 +177,13 @@ class GraphPanel {
     if (node) this.post({ type: 'reveal', id: node.id });
   }
 
-  // ---- git comparison --------------------------------------------------------
-
-  async repoRoot() {
-    const folders = vscode.workspace.workspaceFolders || [];
-    const editor = vscode.window.activeTextEditor;
-    const candidates = [];
-    if (editor && editor.document.uri.scheme === 'file') candidates.push(path.dirname(editor.document.uri.fsPath));
-    for (const f of folders) candidates.push(f.uri.fsPath);
-    for (const c of candidates) {
-      try {
-        return await git.repoRoot(c);
-      } catch {
-        // not a repository
-      }
-    }
-    throw new Error('No git repository found in the workspace.');
-  }
-
-  async pickAndCompare() {
-    const root = await this.repoRoot();
-    const commits = await git.listCommits(root, 300);
-    if (!commits.length) throw new Error('The repository has no commits.');
-    const items = commits.map(c => ({ label: c.short + '  ' + c.subject, description: c.author + ', ' + c.date, rev: c.hash, short: c.short }));
-    const worktree = { label: '$(edit) Working tree', description: 'current files on disk, including uncommitted changes', rev: git.WORKTREE, short: 'working tree' };
-
-    const target = await vscode.window.showQuickPick([worktree, ...items], { title: 'Code Graph: compare — pick the NEWER version', placeHolder: 'Newer version (the graph shows this one)', matchOnDescription: true });
-    if (!target) return;
-    const olderItems = target.rev === git.WORKTREE ? items : items.slice(items.findIndex(i => i.rev === target.rev) + 1);
-    if (!olderItems.length) throw new Error('There is no older commit to compare with.');
-    const base = await vscode.window.showQuickPick(olderItems, { title: 'Code Graph: compare — pick the OLDER version', placeHolder: 'Older version (changes are shown relative to this one)', matchOnDescription: true });
-    if (!base) return;
-    this.show();
-    await this.runCompare(base.rev, target.rev, base.short, target.short, root);
-  }
-
-  async runCompare(base, target, baseLabel, targetLabel, root) {
-    root = root || (this.compare && this.compare.root) || (await this.repoRoot());
-    baseLabel = baseLabel || (this.compare && this.compare.baseLabel) || base.slice(0, 7);
-    targetLabel = targetLabel || (this.compare && this.compare.targetLabel) || (target === git.WORKTREE ? 'working tree' : target.slice(0, 7));
-    this.post({ type: 'status', text: `Building graphs for ${baseLabel} and ${targetLabel}…`, busy: true });
-    const cfg = vscode.workspace.getConfiguration('codeGraph');
-    const exclude = cfg.get('exclude');
-    const maxFiles = cfg.get('maxFiles');
-    const [baseSrc, targetSrc] = await Promise.all([git.readRevision(root, base, exclude, maxFiles), git.readRevision(root, target, exclude, maxFiles)]);
-    // Unchanged files parse identically, so share the parse cache between both builds.
-    const cache = new Map();
-    const baseGraph = buildGraph(baseSrc, cache);
-    const targetGraph = buildGraph(targetSrc, cache);
-    const graph = diffGraphs(baseGraph, targetGraph);
-    const title = `${path.basename(root)}: ${baseLabel} → ${targetLabel}`;
-    this.compare = { root, base, target, baseLabel, targetLabel, graph, title };
-    this.post({ type: 'graph', mode: 'diff', graph, title, compare: { baseLabel, targetLabel } });
-  }
-
   // ---- AI ----------------------------------------------------------------------
 
   async ask(question, focus, mode) {
     question = (question || '').trim();
     if (!question) return;
     this.show();
-    const graph = this.compare ? this.compare.graph : this.withSemantic(this.index.graph || (await this.index.scan()));
+    const graph = this.withSemantic(this.index.graph || (await this.index.scan()));
     if (this.aiCancel) this.aiCancel.cancel();
     const cts = new vscode.CancellationTokenSource();
     this.aiCancel = cts;
@@ -299,9 +218,9 @@ class GraphPanel {
     }
   }
 
-  /** Text of a file in the version the graph shows (the newer side of a comparison). */
+  /** Text of a file in the workspace. */
   async readTarget(file) {
-    const uri = this.uriFor(file, 'target');
+    const uri = this.uriFor(file);
     if (!uri) return null;
     const doc = await vscode.workspace.openTextDocument(uri);
     return doc.getText();
@@ -309,7 +228,7 @@ class GraphPanel {
 
   /** GraphTools for the graph on screen, built once per graph. */
   graphTools() {
-    const graph = this.compare ? this.compare.graph : this.index.graph;
+    const graph = this.index.graph;
     if (!graph) return null;
     let tools = this.toolsByGraph.get(graph);
     if (!tools) this.toolsByGraph.set(graph, (tools = new GraphTools(graph, { readSource: file => this.readTarget(file) })));
@@ -338,7 +257,6 @@ class GraphPanel {
   /** Builds or updates the semantic layer for the workspace, with a cancellable progress notification. */
   async buildSemantic() {
     this.show();
-    if (this.compare) throw new Error('Leave the commit comparison first: the AI layer describes the current code.');
     if (!this.index.graph) await this.refreshWorkspace();
     const model = await selectModel();
     if (!model) throw new Error('No language model is available in VS Code (for example GitHub Copilot Chat).');
@@ -349,7 +267,7 @@ class GraphPanel {
     this.post({ type: 'semanticBuilding', busy: true });
     let result;
     try {
-      result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Code Graph: building the AI layer', cancellable: true }, async (progress, token) => {
+      result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Code Graph: tagging concepts', cancellable: true }, async (progress, token) => {
         let reported = 0;
         return buildSemanticLayer(tools, prev, prompt => streamText(model, prompt, token, () => {}), {
           model: name,
@@ -368,8 +286,8 @@ class GraphPanel {
     const graph = this.withSemantic(this.index.graph);
     this.post({ type: 'graph', mode: 'workspace', graph, title: graph.title });
     const s = result.stats;
-    const info = graph.semantic || { concepts: 0, edges: 0 };
-    let msg = `Code Graph: the AI layer has ${info.concepts} concept${info.concepts === 1 ? '' : 's'} and ${info.edges} inferred link${info.edges === 1 ? '' : 's'}.`;
+    const info = graph.semantic || { concepts: 0 };
+    let msg = `Code Graph: ${info.concepts} concept${info.concepts === 1 ? '' : 's'} tagged.`;
     if (s.error) msg += ` It stopped early (${s.error}); run it again to continue.`;
     else if (s.cancelled || s.filesLeft) msg += ` ${s.filesLeft} file${s.filesLeft === 1 ? '' : 's'} still to tag; run it again to continue.`;
     vscode.window.showInformationMessage(msg);
@@ -520,8 +438,7 @@ class GraphPanel {
       confidenceReason: result.confidenceReason,
       model: result.model,
       // Enough of each step to show the timeline and re-highlight its nodes.
-      steps: steps.map(s => ({ tool: s.tool, summary: s.summary, note: s.note, nodeIds: (s.nodeIds || []).slice(0, HISTORY_STEP_NODES) })),
-      compare: this.compare ? this.compare.title : undefined
+      steps: steps.map(s => ({ tool: s.tool, summary: s.summary, note: s.note, nodeIds: (s.nodeIds || []).slice(0, HISTORY_STEP_NODES) }))
     };
   }
 
@@ -555,35 +472,19 @@ function cancelledResult() {
   return { type: 'aiResult', answer: '_Cancelled._', highlight: [], path: [], cancelled: true };
 }
 
-function gitUri(root, rev, file) {
-  return vscode.Uri.from({ scheme: GIT_SCHEME, path: '/' + file, query: JSON.stringify({ root, rev }) });
-}
-
 function activate(context) {
   const index = new WorkspaceIndex();
   const panel = new GraphPanel(context, index);
 
   context.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(GIT_SCHEME, {
-      async provideTextDocumentContent(uri) {
-        const { root, rev } = JSON.parse(uri.query);
-        try {
-          return await git.showFile(root, rev, uri.path.replace(/^\//, ''));
-        } catch {
-          return ''; // the file does not exist at that revision
-        }
-      }
-    }),
     vscode.commands.registerCommand('codeGraph.open', () => {
       panel.show();
     }),
     vscode.commands.registerCommand('codeGraph.refresh', async () => {
       panel.show();
-      panel.compare = null;
       await panel.refreshWorkspace();
     }),
     vscode.commands.registerCommand('codeGraph.revealInGraph', () => panel.revealAtCursor().catch(err => panel.error(err))),
-    vscode.commands.registerCommand('codeGraph.compareCommits', () => panel.pickAndCompare().catch(err => panel.error(err))),
     vscode.commands.registerCommand('codeGraph.buildSemantic', () => panel.buildSemantic().catch(err => panel.error(err))),
     vscode.commands.registerCommand('codeGraph.ask', async () => {
       const q = await vscode.window.showInputBox({ title: 'Code Graph: ask about the code', placeHolder: 'e.g. What happens when a shape is drawn?' });
@@ -595,7 +496,7 @@ function activate(context) {
   let timer = null;
   const schedule = () => {
     if (!vscode.workspace.getConfiguration('codeGraph').get('autoRefresh')) return;
-    if (!panel.panel || panel.compare) return;
+    if (!panel.panel) return;
     clearTimeout(timer);
     timer = setTimeout(() => panel.refreshWorkspace(true).catch(() => {}), 800);
   };

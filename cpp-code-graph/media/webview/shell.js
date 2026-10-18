@@ -28,11 +28,9 @@ app.innerHTML = `
   <div class="group seg" id="edgeSeg" role="group" aria-label="Arrows"><span class="seglabel">Arrows</span></div>
   <div class="spacer"></div>
   <div class="group">
-    <button id="compareBtn" title="Compare two git commits">Compare commits</button>
     <button id="refreshBtn" title="Rescan the workspace">⟳</button>
   </div>
 </header>
-<div id="banner" class="banner hidden"></div>
 <div class="main">
   <div class="canvas" id="canvas">
     <div id="hlBar" class="hlbar hidden"></div>

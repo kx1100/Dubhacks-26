@@ -191,7 +191,6 @@ export function renderDetails() {
       <button data-act="center">Center</button>
       <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
       ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
-      ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
     </div></details>
     ${members}
     ${rels}${moreRels}
@@ -211,7 +210,6 @@ export function renderDetails() {
       else if (act === 'callers') trace(n.id, 'in');
       else if (act === 'center') renderer.centerOn(nearestInTree(n.id) || n.id, true);
       else if (act === 'focusArea') focusArea(n.id);
-      else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
       else if (act === 'impact') openImpact(n.id);
       else if (act === 'tracePath') {
         switchTab('ai');

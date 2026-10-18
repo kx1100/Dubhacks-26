@@ -57,13 +57,8 @@
         "category": "Code Graph"
       },
       {
-        "command": "codeGraph.compareCommits",
-        "title": "Compare Git Commits",
-        "category": "Code Graph"
-      },
-      {
         "command": "codeGraph.buildSemantic",
-        "title": "Build AI Layer (Concepts and Inferred Links)",
+        "title": "Tag Concepts with AI",
         "category": "Code Graph"
       },
       {

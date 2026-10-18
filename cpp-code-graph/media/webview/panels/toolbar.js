@@ -1,11 +1,11 @@
-// Toolbar and canvas furniture: view and arrow controls, banner, filters, legend,
+// Toolbar and canvas furniture: view and arrow controls, filters, legend,
 // stats, status line, highlight bar and search.
 
 import { $ } from '../shell.js';
 import { KIND_INFO, EDGE_KINDS, EDGE_MODES, EDGE_MODE_INFO, PRESETS } from '../constants.js';
 import { esc } from '../util.js';
-import { vscode, S, persist } from '../state.js';
-import { rebuildTree, initialExpansion } from '../model.js';
+import { S, persist } from '../state.js';
+import { rebuildTree } from '../model.js';
 import { syncImpactToggle } from './impact.js';
 import { syncAiToggle } from './ask.js';
 import { renderer } from '../renderer.js';
@@ -35,34 +35,6 @@ export function renderViewControls() {
   seg($('edgeSeg'), EDGE_MODES.map(m => [m, m[0].toUpperCase() + m.slice(1), EDGE_MODE_INFO[m]]), S.edgeMode, 'edgemode');
   $('presetSeg').querySelectorAll('button').forEach(b => (b.onclick = () => (b.dataset.preset === 'custom' ? null : applyPreset(b.dataset.preset))));
   $('edgeSeg').querySelectorAll('button').forEach(b => (b.onclick = () => setEdgeMode(b.dataset.edgemode)));
-}
-
-export function renderBanner() {
-  const el = $('banner');
-  if (S.mode !== 'diff') {
-    el.classList.add('hidden');
-    return;
-  }
-  const d = (S.graph.stats && S.graph.stats.diff) || { nodes: {}, edges: {} };
-  el.classList.remove('hidden');
-  el.innerHTML = `<span class="b-title">Comparing <b>${esc(S.compare ? S.compare.baseLabel : '')}</b> → <b>${esc(S.compare ? S.compare.targetLabel : '')}</b></span>
-    <span class="pill st-added">+${d.nodes.added || 0} added</span>
-    <span class="pill st-removed">−${d.nodes.removed || 0} removed</span>
-    <span class="pill st-modified">~${d.nodes.modified || 0} modified</span>
-    <span class="muted">relationships: +${d.edges.added || 0} / −${d.edges.removed || 0}</span>
-    <span class="spacer"></span>
-    <label class="toggle"><input type="checkbox" id="changesOnly" ${S.changesOnly ? 'checked' : ''}> Changes only</label>
-    <button id="exitCompare">Exit comparison</button>`;
-  $('changesOnly').onchange = ev => {
-    S.changesOnly = ev.target.checked;
-    rebuildTree();
-    initialExpansion();
-    layoutAndRender('fit');
-  };
-  $('exitCompare').onclick = () => {
-    setStatus('Switching back to the workspace…', true);
-    vscode.postMessage({ type: 'exitCompare' });
-  };
 }
 
 export function renderFilters() {
@@ -113,8 +85,7 @@ export function renderLegend() {
     .join('');
   const kindsShown = ['file', 'class', 'struct', 'function', 'method', 'enum', 'namespace', 'field'];
   const nodes = kindsShown.map(k => `<span class="lnode k-${k}"><span class="g">${KIND_INFO[k].glyph}</span>${KIND_INFO[k].label}</span>`).join('');
-  const diff = S.mode === 'diff' ? '<div class="lrow"><span class="lnode st-added">added</span><span class="lnode st-removed">removed</span><span class="lnode st-modified">modified</span></div>' : '';
-  el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div>${diff}<div class="hint">Dashed = uncertain call · double-click to expand · &lt;/&gt; shows code · Ctrl+click opens source</div></div>`;
+  el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div><div class="hint">Dashed = uncertain call · double-click to expand · &lt;/&gt; shows code · Ctrl+click opens source</div></div>`;
   $('legendToggle').onclick = () => {
     el.classList.toggle('collapsed');
     renderLegend();

@@ -30,7 +30,6 @@ A VS Code extension that draws a C or C++ codebase as an interactive graph of fo
 - **Inline code.** Open a symbol's syntax-highlighted source inside its node; click a line to jump to it in the editor.
 - **Details panel.** A node's signature, location, callers, callees, members and dependencies, plus an optional AI summary (cached per workspace).
 - **Exploring:** focus mode, collapse others, trace callers/callees, and **Show in Code Graph** from the editor's right-click menu.
-- **Git comparison.** **Code Graph: Compare Git Commits** colors added, removed and modified code green, red and yellow.
 - **Live updates** when C/C++ files are saved, created or deleted.
 
 ### Ask AI
@@ -49,12 +48,9 @@ It uses whatever model VS Code provides (e.g. GitHub Copilot) through the Langua
 
 **What if I change this?** in the details panel predicts what else may need to change if you change a node's signature, behavior or name, or remove it. Affected places are scored by risk and colored red, orange and yellow.
 
-- **Check with AI** has the model review the ten riskiest places and mark each one *breaks*, *needs review* or *likely fine*.
-- **Check against my edits** compares the prediction with your uncommitted changes and reports precision and recall.
+### Concepts
 
-### AI layer
-
-**Code Graph: Build AI Layer** tags functions and classes with concepts (e.g. *logging*, *rendering*) and infers links the structure doesn't show, such as alternative implementations, legacy replacements and validators. Inferred links appear as dotted purple arrows (off by default under **Show ▾**). Results are cached per workspace.
+**Code Graph: Tag Concepts with AI** tags functions and classes with concepts (e.g. *logging*, *rendering*). Click a concept to highlight everything tagged with it. Results are cached per workspace.
 
 ## Settings
 
@@ -77,7 +73,7 @@ There is no preprocessing or template instantiation, so calls through macros, fu
 Plain JavaScript. The extension host runs from `src/` as is; the webview is bundled with esbuild (`npm run build`, or `npm run watch`) from `media/webview/main.js` into `media/dist/graph.js`.
 
 - `src/parser/`: lexer and parser
-- `src/graph/`: name resolution, graph building and diffing
+- `src/graph/`: name resolution and graph building
 - `src/ai/`: Language Model API integration (summaries, Ask AI agent, impact, AI layer)
 - `src/extension.js`: commands, webview and file watching
 - `media/webview/`: the webview: `main.js` (messages, actions, bindings), `model.js` (tree, expansion, visible graph), `state.js`, `code.js` (code cards), `tooltip.js`, `shell.js` (page HTML) and `panels/` (toolbar, details, summary, impact, Ask AI)
@@ -95,4 +91,4 @@ Plain JavaScript. The extension host runs from `src/` as is; the webview is bund
 | Large test project | `node test/gen-large.js <dir> [modules]` |
 | Package | `node scripts/package.js` |
 
-UI harness URL options: `?diff`, `?code=name`, `?preset=calls|includes|inheritance|structure`, `?arrows=all|bundled|selected`, `?ai`, `?semantic`, `?large`.
+UI harness URL options: `?code=name`, `?preset=calls|includes|inheritance|structure`, `?arrows=all|bundled|selected`, `?ai`, `?semantic`, `?large`.
