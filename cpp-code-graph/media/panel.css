@@ -488,6 +488,9 @@ body.vscode-light {
   .mi.conf-high, .confbox .conf-high { color: var(--green); }
   .mi.conf-medium, .confbox .conf-medium { color: var(--yellow); }
   .mi.conf-low, .confbox .conf-low { color: var(--orange); }
+  .mi.hltoggle {
+    color: var(--fg);
+  }
   .mi.hltoggle[aria-pressed='true'] {
     color: var(--yellow);
   }

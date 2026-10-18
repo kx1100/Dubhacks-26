@@ -371,7 +371,7 @@ export function syncAiToggle() {
   b.setAttribute('aria-pressed', String(on));
   b.title = on ? 'Remove the highlight from the graph' : 'Highlight the nodes from this answer in the graph';
   b.setAttribute('aria-label', `${on ? 'Highlighted' : 'Highlight'} in graph: ${n} node${n === 1 ? '' : 's'}`);
-  b.innerHTML = `<span class="sw"></span>${n}`;
+  b.innerHTML = `<span class="sw"></span>${on ? 'Highlighted' : 'Highlight'} in graph (${n})`;
 }
 
 export function applyAiHighlight(revealToo) {
