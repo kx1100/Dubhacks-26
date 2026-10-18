@@ -90,6 +90,11 @@
           "default": 3000,
           "description": "Maximum number of files to analyze."
         },
+        "codeGraph.aiSummaries": {
+          "type": "boolean",
+          "default": true,
+          "description": "Describe the selected function, class or file with the language model in the details panel. Descriptions are saved until the code they describe changes."
+        },
         "codeGraph.autoRefresh": {
           "type": "boolean",
           "default": true,

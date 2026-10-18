@@ -342,6 +342,35 @@ async function main() {
     r = await route();
     assert.deepStrictEqual([r.tabs, r.path, r.tags], [[], ['main', 'render', 'draw', 'plot'], ['by name']]);
 
+    // 16. AI summary in the details panel: requested after a short pause, refreshable, kept while browsing.
+    await open('?ai');
+    await evaluate(`window.__summaryCount = 0; document.querySelector('.tabs [data-tab="details"]').click(); cg.reveal(nodeByName('render').id, { center: false }); true`);
+    assert.match(await evaluate("document.getElementById('aiSum').textContent"), /Summarizing/);
+    assert(await evaluate("waitFor(() => document.querySelector('#aiSum p'))"), 'summary shown');
+    const sum = () => evaluate(`JSON.stringify({ text: (document.querySelector('#aiSum p') || {}).textContent, tags: [...document.querySelectorAll('#aiSum .pill')].map(p => p.textContent), notes: document.querySelectorAll('#aiSum li').length, count: window.__summaryCount, structure: !!document.querySelector('#tab-details .desc') })`).then(JSON.parse);
+    let sm = await sum();
+    assert.deepStrictEqual(sm, { text: '(1) render draws every shape onto the canvas and logs each one.', tags: ['rendering', 'entry point'], notes: 1, count: 1, structure: true });
+    await evaluate("document.querySelector('#aiSum [data-sum-refresh]').click(); true");
+    assert.match(await evaluate("document.getElementById('aiSum').textContent"), /Summarizing/);
+    assert(await evaluate("waitFor(() => /^\\(2\\)/.test((document.querySelector('#aiSum p') || {}).textContent || ''))"), 'refreshed');
+    // Folders have no summary; going back to a node reuses its summary.
+    await evaluate("cg.reveal('dir:src', { center: false }); true");
+    await new Promise(r => setTimeout(r, 400));
+    assert.strictEqual(await evaluate("!!document.getElementById('aiSum')"), false);
+    await evaluate("cg.reveal(nodeByName('render').id, { center: false }); true");
+    await new Promise(r => setTimeout(r, 400));
+    sm = await sum();
+    assert.deepStrictEqual([sm.text.slice(0, 3), sm.count], ['(2)', 2]);
+    // After a rescan the old summary stays visible while it is checked again.
+    await evaluate("window.postMessage({ type: 'graph', mode: 'workspace', graph: window.__FIXTURES.graph, title: 'sample' }, '*'); true");
+    await new Promise(r => setTimeout(r, 60));
+    assert.match(await evaluate("(document.querySelector('#aiSum p') || {}).textContent || ''"), /^\(2\)/, 'no flicker to Summarizing');
+    assert(await evaluate("waitFor(() => window.__summaryCount === 3 && /^\\(3\\)/.test((document.querySelector('#aiSum p') || {}).textContent || ''))"), 'checked again after the rescan');
+    // Without a model there is no summary block.
+    await open('');
+    await evaluate(`document.querySelector('.tabs [data-tab="details"]').click(); cg.reveal(nodeByName('render').id, { center: false }); true`);
+    assert(await evaluate("waitFor(() => !document.getElementById('aiSum') || document.getElementById('aiSum').tagName === 'SPAN')"), 'no block without a model');
+
     console.log('ui: ok');
     ws.close();
   } finally {

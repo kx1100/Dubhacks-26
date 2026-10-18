@@ -8,6 +8,9 @@ const { buildGraph } = require('./graph/builder');
 const { diffGraphs } = require('./graph/diff');
 const git = require('./git');
 const { askQuestion } = require('./ai');
+const { selectModel, streamText } = require('./ai/model');
+const { GraphTools } = require('./ai/graphTools');
+const { contentKey, summarize } = require('./ai/summaries');
 
 const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
@@ -15,6 +18,8 @@ const DEFAULT_SNIPPET_LINES = 30; // used when a node has no known end line
 const HISTORY_KEY = 'codeGraph.aiHistory';
 const HISTORY_MAX = 30; // answers kept per workspace
 const HISTORY_STEP_NODES = 40; // node ids kept per investigation step
+const SUMMARY_KEY = 'codeGraph.aiSummaries';
+const SUMMARY_MAX = 400; // node summaries kept per workspace
 
 /** The single Code Graph webview panel. */
 class GraphPanel {
@@ -26,6 +31,8 @@ class GraphPanel {
     this.pending = [];
     this.compare = null; // {root, base, target, baseLabel, targetLabel, graph}
     this.aiCancel = null;
+    this.summaryCancel = null;
+    this.toolsByGraph = new WeakMap(); // graph -> GraphTools, for summaries
   }
 
   show() {
@@ -105,6 +112,9 @@ class GraphPanel {
         break;
       case 'ask':
         await this.ask(m.question, m.focus, m.mode);
+        break;
+      case 'getSummary':
+        await this.getSummary(m);
         break;
       case 'cancelAsk':
         if (this.aiCancel) this.aiCancel.cancel();
@@ -242,12 +252,7 @@ class GraphPanel {
     const cts = new vscode.CancellationTokenSource();
     this.aiCancel = cts;
     this.post({ type: 'aiStart', question });
-    const readSource = async file => {
-      const uri = this.uriFor(file, 'target');
-      if (!uri) return null;
-      const doc = await vscode.workspace.openTextDocument(uri);
-      return doc.getText();
-    };
+    const readSource = file => this.readTarget(file);
     const steps = [];
     try {
       const result = await askQuestion(graph, question, {
@@ -273,6 +278,56 @@ class GraphPanel {
       } else this.post({ type: 'aiResult', answer: 'Error: ' + ((err && err.message) || err), highlight: [], path: [], error: true });
     } finally {
       if (this.aiCancel === cts) this.aiCancel = null;
+      cts.dispose();
+    }
+  }
+
+  /** Text of a file in the version the graph shows (the newer side of a comparison). */
+  async readTarget(file) {
+    const uri = this.uriFor(file, 'target');
+    if (!uri) return null;
+    const doc = await vscode.workspace.openTextDocument(uri);
+    return doc.getText();
+  }
+
+  // ---- AI node summaries (cached per workspace until the code changes) ------------
+
+  /** Replies to the webview's getSummary {id, refresh} with a summary of that node. */
+  async getSummary(m) {
+    const reply = { type: 'summary', id: m.id };
+    if (vscode.workspace.getConfiguration('codeGraph').get('aiSummaries') === false) return this.post({ ...reply, disabled: true });
+    const graph = this.compare ? this.compare.graph : this.index.graph;
+    if (!graph) return this.post({ ...reply, disabled: true });
+    let tools = this.toolsByGraph.get(graph);
+    if (!tools) this.toolsByGraph.set(graph, (tools = new GraphTools(graph, { readSource: file => this.readTarget(file) })));
+    const node = tools.nodes.get(m.id);
+    const key = contentKey(tools, node);
+    if (!key) return this.post({ ...reply, disabled: true });
+    const state = this.context.workspaceState;
+    const hit = state && (state.get(SUMMARY_KEY) || {})[m.id];
+    if (hit && hit.key === key && !m.refresh) return this.post({ ...reply, summary: hit.summary, model: hit.model, cached: true });
+
+    const model = await selectModel();
+    if (!model) return this.post({ ...reply, unavailable: true });
+    // Only the latest request runs; the webview asks again for a cancelled one when needed.
+    if (this.summaryCancel) this.summaryCancel.cancel();
+    const cts = new vscode.CancellationTokenSource();
+    this.summaryCancel = cts;
+    try {
+      const summary = await summarize(tools, node, prompt => streamText(model, prompt, cts.token, () => {}));
+      if (cts.token.isCancellationRequested) return this.post({ ...reply, cancelled: true });
+      const name = model.name || model.family;
+      if (state) {
+        const cache = { ...(state.get(SUMMARY_KEY) || {}), [m.id]: { key, summary, model: name, time: Date.now() } };
+        const ids = Object.keys(cache);
+        if (ids.length > SUMMARY_MAX) ids.sort((a, b) => cache[a].time - cache[b].time).slice(0, ids.length - SUMMARY_MAX).forEach(id => delete cache[id]);
+        await state.update(SUMMARY_KEY, cache);
+      }
+      this.post({ ...reply, summary, model: name });
+    } catch (err) {
+      this.post(cts.token.isCancellationRequested ? { ...reply, cancelled: true } : { ...reply, error: (err && err.message) || String(err) });
+    } finally {
+      if (this.summaryCancel === cts) this.summaryCancel = null;
       cts.dispose();
     }
   }

@@ -29,6 +29,15 @@
       }
       // ?ai answers questions with a canned investigation, like the agent in the extension host.
       if (m.type === 'ask' && new URLSearchParams(location.search).has('ai')) replayInvestigation(m);
+      // Node summaries: canned with ?ai, otherwise "no model" like VS Code without Copilot.
+      if (m.type === 'getSummary') {
+        const n = window.__FIXTURES.graph.nodes.find(x => x.id === m.id);
+        const count = (window.__summaryCount = (window.__summaryCount || 0) + 1);
+        const reply = new URLSearchParams(location.search).has('ai')
+          ? { summary: { purpose: `(${count}) ${n.name} draws every shape onto the canvas and logs each one.`, tags: ['rendering', 'entry point'], notes: ['Calls draw through the Shape base class.'] }, model: 'Harness' }
+          : { unavailable: true };
+        setTimeout(() => window.postMessage({ type: 'summary', id: m.id, ...reply }, '*'), 120);
+      }
       // History, kept like the extension does (newest first).
       if (m.type === 'aiHistoryDelete') postHistory(window.__history.filter(e => e.id !== m.id));
       if (m.type === 'aiHistoryClear') postHistory([]);

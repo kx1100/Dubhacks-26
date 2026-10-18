@@ -18,7 +18,7 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
   You can switch each kind on or off under **Show ▾**. Calls the extension could not resolve for certain are drawn dashed.
 - **Inline code.** Click the `</>` button on a function, method, class, enum or variable (or select it and press **C**) to open its source inside the node. The code is syntax-highlighted, the layout makes room for it, and clicking a line opens that line in the editor. Long bodies scroll inside the card. A function shows its definition; for a free function the details panel also links to its prototype in the header. In a comparison, the card shows the version on the side being viewed.
 - **Navigation.** Zoom with the mouse wheel and pan by dragging. Search with `/`, which offers suggestions as you type. **Ctrl+click** (or **Enter**) opens a node's source. Every relationship in the details panel links to the exact call site.
-- **Details panel.** Click a node to see a plain-language summary ("A virtual member function of Circle. It calls 3 functions…"). The panel also shows the node's signature and where it is declared and defined. It lists what the node calls, what calls it, its base and derived classes, its members, and which files it depends on.
+- **Details panel.** Click a node to see what it is for. When a language model is available, an **AI** summary describes the role of the function, class or file in plain language, with a few tags and notes a newcomer should know. Summaries are saved per workspace and only written again when that code changes; ↻ writes a new one, and the `codeGraph.aiSummaries` setting turns them off. Below it is a structural summary ("A virtual member function of Circle. It calls 3 functions…"). The panel also shows the node's signature and where it is declared and defined. It lists what the node calls, what calls it, its base and derived classes, its members, and which files it depends on.
 - **Views.** The **View** buttons in the toolbar pick a layout built around one question:
   - **Structure** (the default): folders, files and classes, with arrows only for the node you select.
   - **Includes**: which files include which, and which header goes with which source file.
@@ -60,6 +60,7 @@ Many tools build code graphs for AI to read. This one is meant for people, espec
 | `codeGraph.exclude` | build, vendor and third-party folders | Files and folders to skip |
 | `codeGraph.maxFiles` | `3000` | Maximum number of files to analyze |
 | `codeGraph.autoRefresh` | `true` | Rebuild the graph when C/C++ files change |
+| `codeGraph.aiSummaries` | `true` | Describe the selected node with the language model in the details panel |
 
 ## How it works
 
@@ -90,7 +91,7 @@ The extension is plain JavaScript with no build step.
 - `src/graph/builder.js`: name resolution and graph building
 - `src/graph/diff.js`: graph comparison
 - `src/git.js`: reads source files at any revision using the git CLI
-- `src/ai/`: Language Model API integration (`model.js` model access, `context.js` prompt context, `answer.js` answer parsing, `graphTools.js` graph queries the agent uses as tools, `agent.js` the tool-calling investigation loop)
+- `src/ai/`: Language Model API integration (`model.js` model access, `context.js` prompt context, `answer.js` answer parsing, `graphTools.js` graph queries the agent uses as tools, `agent.js` the tool-calling investigation loop, `summaries.js` node descriptions)
 - `src/extension.js`: commands, webview panel and file watching
 - `media/graph.js`, `media/graph.css`: the webview (custom SVG renderer with a nested layered layout; no external libraries)
 - `media/highlight.js`: the small C/C++ syntax highlighter used by the inline code cards
@@ -103,6 +104,6 @@ To develop and test:
 - **UI harness:** `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178`. This loads the webview with sample data in a regular browser; add `?diff` to the URL for the comparison view, `?code=name` (repeatable) to open code cards, `?preset=calls` (or `includes`, `inheritance`, `structure`) and `?arrows=all` (or `bundled`, `selected`) to pick a view, `?ai` to answer questions with a canned AI investigation, and `?large` to load a generated 80-file project (see below).
 - **Large project:** `node test/gen-large.js <dir> [modules]` writes a synthetic C project for trying big graphs. `node test/make-fixtures.js <dir> test` then writes `test/fixtures.js`; the browser test builds `test/fixtures-large.js` itself when it needs it.
 - **Highlighter test:** `node test/highlight.test.js`.
-- **AI graph tools test:** `node test/graphTools.test.js` checks symbol search, neighbors, call paths, reach, source reads and grep against `sample/`. `node test/agent.test.js` drives the investigation loop with a scripted model.
+- **AI graph tools test:** `node test/graphTools.test.js` checks symbol search, neighbors, call paths, reach, source reads and grep against `sample/`. `node test/agent.test.js` drives the investigation loop with a scripted model. `node test/summaries.test.js` checks node summary prompts, parsing and cache keys.
 - **Browser test:** `node test/ui.test.js` drives the harness in headless Chrome or Edge (set `CHROME` to the executable if it is not found). It covers code cards, the header ↔ source edges, the views and arrow modes, bundling, left-to-right layout, long-arrow labels and Collapse others.
 - **Package:** `node scripts/package.js` builds a `.vsix` without `vsce`.

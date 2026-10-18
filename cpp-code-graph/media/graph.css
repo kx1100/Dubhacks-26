@@ -1334,3 +1334,53 @@ ol.route {
 .tag.uncertain {
   border-style: dotted;
 }
+
+/* AI summary in the details panel */
+
+.aisum {
+  margin: 8px 0;
+  padding: 7px 9px;
+  border-left: 3px solid var(--purple);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--purple) 8%, transparent);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.aisum p {
+  margin: 4px 0 0;
+}
+.aisum ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+.aisum.loading .muted {
+  animation: visited-pulse 0.9s ease-in-out infinite alternate;
+}
+.aihead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.aihead .icon {
+  margin-left: auto;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+}
+.aihead .icon:hover {
+  color: var(--fg);
+}
+.aibadge {
+  display: inline-block;
+  padding: 0 5px;
+  margin-right: 4px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--bg);
+  background: var(--purple);
+  cursor: default;
+}

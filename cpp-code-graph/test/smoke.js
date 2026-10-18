@@ -205,5 +205,43 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (workspaceStore.get('codeGraph.aiHistory').length !== 4) throw new Error('delete failed');
   await onMessage({ type: 'aiHistoryClear' });
   if (workspaceStore.get('codeGraph.aiHistory').length !== 0 || posted.filter(m => m.type === 'aiHistory').pop().entries.length !== 0) throw new Error('clear failed');
+
+  // AI node summaries: generated once, then served from the workspace cache until the code changes.
+  let summaryCalls = 0;
+  const summaryModel = {
+    name: 'Summarizer', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages) {
+      summaryCalls++;
+      if (!/Element: geo::Canvas::render \(method\)/.test(messages[0].content)) throw new Error('bad summary prompt');
+      return { text: (async function* () { yield '{"purpose": "Draws every shape (' + summaryCalls + ').", "tags": ["rendering"], "notes": []}'; })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [summaryModel];
+  const renderId = g.graph.nodes.find(n => n.qname === 'geo::Canvas::render').id;
+  const lastSummary = () => posted.filter(m => m.type === 'summary').pop();
+  await onMessage({ type: 'getSummary', id: renderId });
+  let sm = lastSummary();
+  if (!sm || !sm.summary || sm.summary.purpose !== 'Draws every shape (1).' || sm.cached || sm.model !== 'Summarizer' || summaryCalls !== 1) throw new Error('bad summary ' + JSON.stringify(sm));
+  await onMessage({ type: 'getSummary', id: renderId });
+  sm = lastSummary();
+  if (!sm.cached || sm.summary.purpose !== 'Draws every shape (1).' || summaryCalls !== 1) throw new Error('summary not cached ' + JSON.stringify(sm));
+  await onMessage({ type: 'getSummary', id: renderId, refresh: true });
+  if (!lastSummary().summary || lastSummary().summary.purpose !== 'Draws every shape (2).' || summaryCalls !== 2) throw new Error('refresh did not regenerate ' + JSON.stringify(lastSummary()));
+  // Changed code (a new hash) is summarized again.
+  g.graph.nodes.find(n => n.id === renderId).hash = 'edited';
+  await onMessage({ type: 'getSummary', id: renderId });
+  if (lastSummary().cached || summaryCalls !== 3) throw new Error('changed code was served from the cache');
+  if (workspaceStore.get('codeGraph.aiSummaries')[renderId].summary.purpose !== 'Draws every shape (3).') throw new Error('summary not saved');
+  // Folders are not summarized; the setting turns summaries off; without a model they are unavailable.
+  await onMessage({ type: 'getSummary', id: 'dir:src' });
+  if (!lastSummary().disabled) throw new Error('folder should not be summarized');
+  const getConfiguration = vscode.workspace.getConfiguration;
+  vscode.workspace.getConfiguration = () => ({ get: k => (k === 'aiSummaries' ? false : undefined) });
+  await onMessage({ type: 'getSummary', id: renderId, refresh: true });
+  vscode.workspace.getConfiguration = getConfiguration;
+  if (!lastSummary().disabled || summaryCalls !== 3) throw new Error('setting did not disable summaries');
+  vscode.lm.selectChatModels = async () => [];
+  await onMessage({ type: 'getSummary', id: renderId, refresh: true });
+  if (!lastSummary().unavailable) throw new Error('missing model not reported');
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });
