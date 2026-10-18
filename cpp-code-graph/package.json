@@ -1,7 +1,7 @@
 {
   "name": "cpp-code-graph",
   "displayName": "C/C++ Code Graph",
-  "description": "Explore a C/C++ codebase as an interactive graph of files, classes and functions, with call, include and inheritance relationships, git commit comparison and AI-assisted exploration.",
+  "description": "See how a C/C++ codebase fits together: an interactive graph of files, includes, header/source pairs, functions, calls and the structs they use, with git commit comparison and AI questions about the code.",
   "version": "0.1.0",
   "publisher": "cpp-code-graph",
   "license": "MIT",
@@ -23,26 +23,18 @@
     "architecture"
   ],
   "main": "./out/extension.js",
-  "scripts": {
-    "build": "node scripts/build-extension.js && node scripts/build-webview.js",
-    "watch": "node scripts/watch.js",
-    "typecheck": "tsc -p .",
-    "test": "node test/run.js",
-    "package": "node scripts/package.js"
-  },
-  "devDependencies": {
-    "@types/node": "20.19.43",
-    "@types/vscode": "1.90.0",
-    "cytoscape": "3.34.4",
-    "cytoscape-elk": "2.3.0",
-    "esbuild": "0.28.2",
-    "typescript": "7.0.2",
-    "web-tree-sitter": "0.27.1"
-  },
   "activationEvents": [
     "onLanguage:c",
     "onLanguage:cpp"
   ],
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node esbuild.mjs --tests && node out/test/run.js && node test/smoke.cjs && node test/ai/run.cjs",
+    "harness": "node test/serve.mjs",
+    "vscode:prepublish": "node esbuild.mjs --production"
+  },
   "contributes": {
     "commands": [
       {
@@ -62,8 +54,13 @@
         "category": "Code Graph"
       },
       {
+        "command": "codeGraph.compareCommits",
+        "title": "Compare Git Commits",
+        "category": "Code Graph"
+      },
+      {
         "command": "codeGraph.buildSemantic",
-        "title": "Tag Concepts with AI",
+        "title": "Build AI Layer (Concepts and Inferred Links)",
         "category": "Code Graph"
       },
       {
@@ -73,7 +70,7 @@
       },
       {
         "command": "codeGraph.dumpSymbols",
-        "title": "Dump Parsed Symbols",
+        "title": "Dump Parsed Symbols (debug)",
         "category": "Code Graph"
       }
     ],
@@ -114,7 +111,7 @@
         "codeGraph.aiSummaries": {
           "type": "boolean",
           "default": true,
-          "description": "Describe the selected function, class or file with the language model in the details panel. Descriptions are saved until the code they describe changes."
+          "description": "Describe the selected function, type or file with the language model in the Ask AI panel. Descriptions are saved until the code they describe changes."
         },
         "codeGraph.autoRefresh": {
           "type": "boolean",
@@ -123,5 +120,16 @@
         }
       }
     }
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.95.0",
+    "cytoscape": "3.34.4",
+    "cytoscape-elk": "2.3.0",
+    "esbuild": "0.28.2",
+    "tree-sitter-c": "0.24.1",
+    "tree-sitter-cpp": "0.23.4",
+    "typescript": "7.0.2",
+    "web-tree-sitter": "0.27.1"
   }
 }
