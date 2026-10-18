@@ -28,13 +28,12 @@
     "onLanguage:cpp"
   ],
   "scripts": {
-    "build": "node esbuild.mjs",
-    "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit",
-    "test": "node esbuild.mjs --tests && node out/test/run.js && node test/smoke.cjs && node test/ai/run.cjs",
-    "harness": "node test/serve.mjs",
-    "vscode:prepublish": "node esbuild.mjs --production"
-  },
+  "build": "node scripts/build-extension.js && node scripts/build-webview.js",
+  "watch": "node scripts/watch.js",
+  "typecheck": "tsc -p .",
+  "test": "node test/run.js",
+  "package": "node scripts/package.js"
+},
   "contributes": {
     "commands": [
       {
