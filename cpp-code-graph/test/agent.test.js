@@ -88,13 +88,17 @@ const call = (name, input) => ({ name, input });
   assert.match(llm.seen[2].messages[4].results[0].text, /void Canvas::render/);
 
   // Steps: the head start plus one per tool call, with readable summaries.
-  assert.deepStrictEqual(steps.map(s => s.tool), ['search_symbols', 'search_symbols', 'neighbors', 'read_code']);
-  assert.deepStrictEqual(steps.map(s => s.i), [0, 1, 2, 3]);
-  assert.match(steps[2].summary, /^Outgoing calls of geo::Canvas::render \(\d+\)$/);
-  assert.strictEqual(steps[3].summary, 'Read the code of geo::Canvas::render');
-  assert.strictEqual(steps[1].note, 'Let me look at rendering.');
-  assert.ok(steps[2].nodeIds.includes(idOf('log_message')));
-  assert.strictEqual(res.steps, 4);
+  assert.deepStrictEqual(steps.map(s => s.tool), ['search_symbols', 'read_code', 'search_symbols', 'neighbors', 'read_code']);
+  assert.deepStrictEqual(steps.map(s => s.i), [0, 1, 2, 3, 4]);
+  // The likeliest functions are read up front, and their source is in the first message.
+  assert.match(steps[1].summary, /^Read the code of \d likely functions?$/);
+  assert.ok(steps[1].nodeIds.length >= 1 && steps[1].nodeIds.length <= 5);
+  assert.match(intro, /Source of the likeliest functions \(already read/);
+  assert.match(steps[3].summary, /^Outgoing calls of geo::Canvas::render \(\d+\)$/);
+  assert.strictEqual(steps[4].summary, 'Read the code of geo::Canvas::render');
+  assert.strictEqual(steps[2].note, 'Let me look at rendering.');
+  assert.ok(steps[3].nodeIds.includes(idOf('log_message')));
+  assert.strictEqual(res.steps, 5);
   assert.strictEqual(res.model, 'Scripted');
 
   // Answer refs become node ids; names resolve; unknown refs become code text.
@@ -116,9 +120,9 @@ const call = (name, input) => ({ name, input });
   // Highlight: known nodes only, plus everything referenced, on the path or cited.
   assert.ok(!res.highlight.includes(undefined) && res.highlight.every(id => graph.nodes.some(n => n.id === id)));
   for (const n of ['main', 'render', 'log_message', 'plot', 'geo::Shape::draw']) assert.ok(res.highlight.includes(idOf(n)), 'highlight ' + n);
-  // Only 1 of the 5 functions it cites was read, so the model's "high" is not enough.
+  // Only 2 of the 5 functions it cites were read, so the model's "high" is not enough.
   assert.strictEqual(res.confidence, 'medium');
-  assert.strictEqual(res.confidenceReason, 'read the code of 1 of the 5 functions it cites; 2 cited source lines; 1 call matched by name only');
+  assert.strictEqual(res.confidenceReason, 'read the code of 2 of the 5 functions it cites; 2 cited source lines; 1 call matched by name only');
 
   // 2. A path hop with no call edge is kept but marked inferred.
   llm = scripted([{ calls: [call('finish', { answer: 'x', path: `${ref('main')} -> ${ref('plot')}`, confidence: 'medium' })] }]);

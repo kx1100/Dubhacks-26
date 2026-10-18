@@ -13,6 +13,8 @@
 const { GraphTools } = require('./graphTools');
 
 const MAX_STEPS = 12;
+const PRELOAD_MAX = 5; // functions whose source is given up front
+const PRELOAD_LINES = 60; // lines of each
 const RESULT_CHARS = 6000; // longest tool result sent back to the model
 const EDGE_KINDS = ['calls', 'includes', 'inherits', 'overrides', 'uses', 'pairs'];
 
@@ -119,7 +121,8 @@ Relationships: calls (function -> function), includes (file -> header), inherits
 Calls marked "uncertain" were matched by name only. Calls through function pointers, callbacks and macros are missing from the graph; grep can find them.
 Work efficiently: you have at most ${MAX_STEPS} rounds of tool calls, and several independent calls can be made in one round. Stop as soon as you can answer well.
 Then call finish. Write for someone who may be new to the code: clear and concise (under 250 words unless needed).
-Back the important claims with evidence items whose file and line come from tool output.`;
+Only state what code you have read supports. Some function bodies are given below; read the others with read_code before you describe them, or say that you did not check them.
+Back the important claims with 2-4 evidence items whose file and line come from tool output.`;
 
 const MODE_HINTS = {
   ask: '',
@@ -201,6 +204,24 @@ async function investigate(graph, question, opts) {
     const entry = focus && (focus.kind === 'function' || focus.kind === 'method') ? focus : mains[0];
     if (entry) callTree = 'Calls reachable from ' + tools.label(entry) + ' (up to 3 levels; read the bodies for the order):\n' + tools.reach(entry.id, { dir: 'out', maxDepth: 3, limit: 60 }).text;
   }
+  // The source of the likeliest functions up front, so the model starts from code instead of guesses.
+  const isFn = n => !!n && (n.kind === 'function' || n.kind === 'method');
+  const candidates = [];
+  for (const n of [isFn(focus) ? focus : null, opts.mode === 'path' ? mains[0] : null, ...first.nodeIds.map(id => tools.nodes.get(id))]) {
+    if (isFn(n) && !candidates.includes(n.id)) candidates.push(n.id);
+  }
+  const preBudget = Math.min(24000, Math.floor(budget * 0.3));
+  const preRead = [];
+  const preBlocks = [];
+  let preUsed = 0;
+  for (const id of candidates.slice(0, PRELOAD_MAX)) {
+    const r = await tools.readCode(id, { maxLines: PRELOAD_LINES });
+    if (!r.file || preUsed + r.text.length > preBudget) continue;
+    preRead.push(id);
+    preBlocks.push(r.text);
+    preUsed += r.text.length;
+  }
+  if (preRead.length) step({ tool: 'read_code', args: { preloaded: true }, summary: `Read the code of ${preRead.length} likely function${preRead.length === 1 ? '' : 's'}`, nodeIds: preRead });
   const intro = [
     SYSTEM,
     MODE_HINTS[opts.mode || 'ask'] || '',
@@ -209,6 +230,7 @@ async function investigate(graph, question, opts) {
     focus ? 'The developer has this node selected: ' + tools.label(focus) : '',
     'Symbols matching the question:\n' + first.text,
     callTree,
+    preBlocks.length ? 'Source of the likeliest functions (already read, no need to read them again):\n' + preBlocks.join('\n\n') : '',
     'Question: ' + question
   ]
     .filter(Boolean)
@@ -219,7 +241,7 @@ async function investigate(graph, question, opts) {
   const cache = new Map();
   let final = null;
   let lastText = '';
-  const readIds = new Set(); // nodes whose code the model read
+  const readIds = new Set(preRead); // nodes whose code the model has seen
   let toolCalls = 0; // lookups beyond the head start
   let forced = null; // why the model was made to finish, if it was
 

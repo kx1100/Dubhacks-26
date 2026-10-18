@@ -139,8 +139,8 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   const sent = requests[1].messages;
   if (sent[1].role !== 'assistant' || sent[1].content[0].value !== 'Checking main.' || sent[1].content[1].callId !== 't1') throw new Error('assistant turn not replayed');
   if (!(sent[2].content[0] instanceof vscode.LanguageModelToolResultPart) || sent[2].content[0].callId !== 't1') throw new Error('tool result not sent');
-  if (steps.length !== 2 || steps[1].step.tool !== 'neighbors' || !steps[1].step.nodeIds.length) throw new Error('bad steps ' + JSON.stringify(steps));
-  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'medium' || !/^read none of the 2 functions it cites; 1 cited source line$/.test(tres.confidenceReason) || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
+  if (steps.length !== 3 || steps[1].step.tool !== 'read_code' || steps[2].step.tool !== 'neighbors' || !steps[2].step.nodeIds.length) throw new Error('bad steps ' + JSON.stringify(steps));
+  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || tres.confidenceReason !== 'read the code of 2 of the 2 functions it cites; 1 cited source line' || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
   console.log('agent answer:', tres.answer);
 
   // Stop during an investigation still ends with a (cancelled) result, so the panel is not left busy.
@@ -195,7 +195,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   const qs = saved.map(e => e.question);
   if (qs.join('|') !== 'Anything?|Anything?|Anything?|How does rendering work?|How does rendering work?') throw new Error('bad history ' + JSON.stringify(qs));
   const agentEntry = saved[3];
-  if (agentEntry.mode !== 'path' || agentEntry.steps.length !== 2 || agentEntry.steps[1].tool !== 'neighbors' || agentEntry.path.length !== 2 || agentEntry.evidence.length !== 1) throw new Error('bad agent entry ' + JSON.stringify(agentEntry));
+  if (agentEntry.mode !== 'path' || agentEntry.steps.length !== 3 || agentEntry.steps[2].tool !== 'neighbors' || agentEntry.path.length !== 2 || agentEntry.evidence.length !== 1) throw new Error('bad agent entry ' + JSON.stringify(agentEntry));
   if (posted.find(m => m.type === 'aiResult').entryId !== saved[0].id) throw new Error('result does not name its history entry');
   posted.length = 0;
   await onMessage({ type: 'ready' });
