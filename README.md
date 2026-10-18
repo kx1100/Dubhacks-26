@@ -1,4 +1,4 @@
-# C/C++ Code Graph
+# Code Graph (C/C++)
 
 A VS Code extension that draws a C or C++ codebase as an interactive graph of files, classes and functions, connected by calls, `#include`s, inheritance, overrides and type dependencies. It's built for people, especially anyone new to a codebase, rather than for AI to consume.
 
