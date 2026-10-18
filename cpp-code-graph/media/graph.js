@@ -133,6 +133,7 @@
     visited: null, // Set of node ids the AI investigation is looking at (current or hovered step)
     history: [], // saved AI answers for this workspace, newest first (kept by the extension)
     summaries: new Map(), // node id -> {status: loading|ready|error|unavailable|disabled, summary, model, cached}
+    impact: null, // {target, changeType, busy, result} for the Impact tab
     historyOpen: true,
     layout: null,
     savedMode: saved.mode || null
@@ -199,8 +200,10 @@
       <div class="tabs">
         <button data-tab="details" class="active">Details</button>
         <button data-tab="ai">Ask AI</button>
+        <button data-tab="impact">Impact</button>
       </div>
       <div id="tab-details" class="tabbody"></div>
+      <div id="tab-impact" class="tabbody hidden"></div>
       <div id="tab-ai" class="tabbody hidden">
         <div class="ask">
           <div class="seg modes" id="aiModes" role="group" aria-label="Mode"></div>
@@ -1216,6 +1219,7 @@
     const related = relatedSets();
     const hl = highlightReps();
     const visitedReps = S.visited ? new Set([...S.visited].map(id => vis.repOf(id)).filter(Boolean)) : null;
+    const impactReps = impactTiers(vis);
     const dimActive = (S.focusMode && related) || hl;
     const matchSet = new Set(S.search.matches.map(id => vis.repOf(id)).filter(Boolean));
     const changedBelow = S.mode === 'diff' ? changedDescendantCounts() : null;
@@ -1241,6 +1245,7 @@
       if (matchSet.has(id)) cls.push('match');
       if (hl && hl.has(id)) cls.push('hl');
       if (visitedReps && visitedReps.has(id)) cls.push('visited');
+      if (impactReps && impactReps.has(id)) cls.push('imp-' + impactReps.get(id));
       if (dimActive) {
         const keep = (hl && hl.has(id)) || (visitedReps && visitedReps.has(id)) || (S.focusMode && related && related.nodes.has(id)) || (hl && b.container && [...hl].some(h => isDescendant(h, id)));
         if (!keep) cls.push('dim');
@@ -1758,6 +1763,7 @@
 
   function renderHighlightBar() {
     syncAiToggle();
+    syncImpactToggle();
     const el = $('hlBar');
     if (!S.highlight) {
       el.classList.add('hidden');
@@ -1934,6 +1940,7 @@
         <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
         <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
         ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
+        ${IMPACT_KINDS.has(n.kind) && n.status !== 'removed' ? '<button data-act="impact" title="Predict what else may need to change if you change this">What if I change this?</button>' : ''}
         ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
       </div>
       ${members}
@@ -1954,6 +1961,7 @@
         else if (act === 'center') centerOn(nearestInTree(n.id) || n.id, true);
         else if (act === 'focusArea') focusArea(n.id);
         else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
+        else if (act === 'impact') openImpact(n.id);
         else if (act === 'tracePath') {
           switchTab('ai');
           S.aiMode = 'path';
@@ -2042,6 +2050,149 @@
     const status = m.disabled ? 'disabled' : m.unavailable ? 'unavailable' : m.error ? 'error' : 'ready';
     S.summaries.set(m.id, { status, summary: m.summary, model: m.model, cached: !!m.cached, error: m.error });
     updateSummaryBlock(m.id);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Change impact (see src/ai/impact.js)
+
+  const IMPACT_KINDS = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'file']);
+  const IMPACT_CHANGES = ['signature', 'behavior', 'rename', 'remove'];
+  const CHANGE_LABELS = { signature: 'Signature', behavior: 'Behavior', rename: 'Rename', remove: 'Remove' };
+  const CHANGE_TITLES = {
+    signature: 'Its parameters, return type or public members change',
+    behavior: 'What it does changes, but not how it is called',
+    rename: 'It gets a new name',
+    remove: 'It is deleted'
+  };
+  const TIER_ORDER = { high: 3, medium: 2, low: 1 };
+
+  function openImpact(id, changeType) {
+    S.impact = { target: id, changeType: changeType || (S.impact && S.impact.changeType) || 'signature', busy: true, result: null };
+    switchTab('impact');
+    requestImpact(false);
+  }
+
+  function requestImpact(quiet) {
+    S.impact.busy = true;
+    if (!quiet) renderImpact();
+    vscode.postMessage({ type: 'impact', id: S.impact.target, changeType: S.impact.changeType });
+  }
+
+  function onImpact(m) {
+    const imp = S.impact;
+    if (!imp || m.id !== imp.target || m.requested !== imp.changeType) return; // an older request
+    const wasOn = impactOn();
+    imp.busy = false;
+    imp.result = m;
+    if (S.tab === 'impact') renderImpact();
+    // Show the new result on the graph when it was showing, or when the user is looking at it.
+    if (!m.error && (wasOn || S.tab === 'impact' || !S.highlight)) applyImpactHighlight();
+    else syncImpactToggle();
+  }
+
+  function impactOn() {
+    return !!(S.highlight && S.highlight.source === 'impact' && S.highlight.impact === S.impact);
+  }
+
+  function applyImpactHighlight() {
+    const imp = S.impact;
+    if (!imp || !imp.result || imp.result.error) return;
+    const ids = new Set([imp.target, ...imp.result.items.map(i => i.id)].filter(id => S.nodes.has(id)));
+    const n = S.nodes.get(imp.target);
+    S.highlight = { ids, path: [], label: `Impact: ${CHANGE_LABELS[imp.changeType].toLowerCase()} of ${n ? n.qname || n.name : imp.target}`, source: 'impact', impact: imp };
+    render();
+  }
+
+  /** Visible node -> worst tier of the affected nodes it stands for ('target' for the changed node). */
+  function impactTiers(vis) {
+    if (!S.highlight || S.highlight.source !== 'impact') return null;
+    const imp = S.highlight.impact;
+    if (!imp.result || imp.result.error) return null; // a new kind of change is being worked out
+    const tiers = new Map();
+    for (const it of imp.result.items) {
+      const r = vis.repOf(it.id);
+      if (r && (TIER_ORDER[it.tier] || 0) > (TIER_ORDER[tiers.get(r)] || 0)) tiers.set(r, it.tier);
+    }
+    const t = vis.repOf(imp.target);
+    if (t) tiers.set(t, 'target');
+    return tiers;
+  }
+
+  function syncImpactToggle() {
+    const b = $('impShow');
+    if (!b) return;
+    const on = impactOn();
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    b.innerHTML = `<span class="sw"></span>${on ? 'Shown' : 'Show'} on graph`;
+  }
+
+  function renderImpact() {
+    const el = $('tab-impact');
+    const imp = S.impact;
+    const sel = S.selected && S.nodes.get(S.selected);
+    if (!imp) {
+      el.innerHTML = `<div class="intro"><h3>What if I change this?</h3>
+        <p>Pick a function, class or file, then choose <b>What if I change this?</b> in its details. You'll see what else may need to change, ranked by risk, and the graph is colored by how strongly each part is affected.</p>
+        ${sel && IMPACT_KINDS.has(sel.kind) ? `<button id="impStart" class="primary">What if I change ${esc(sel.name)}?</button>` : ''}</div>`;
+      if ($('impStart')) $('impStart').onclick = () => openImpact(sel.id);
+      return;
+    }
+    const n = S.nodes.get(imp.target);
+    const tabs = IMPACT_CHANGES.map(c => {
+      const label = n && n.kind === 'file' && c === 'signature' ? 'Interface' : CHANGE_LABELS[c];
+      return `<button data-change="${c}" class="${c === imp.changeType ? 'active' : ''}" aria-pressed="${c === imp.changeType}" title="${esc(CHANGE_TITLES[c])}">${label}</button>`;
+    }).join('');
+    const head = `<div class="imphead">${n ? nodeChip(imp.target) : esc(imp.target)}</div>
+      <div class="seg impchange" role="group" aria-label="Kind of change">${tabs}</div>
+      <p class="predict">A prediction from the code graph, not a guarantee. Calls through function pointers, macros or templates may be missing, and calls matched by name may be wrong.</p>`;
+    const r = imp.result;
+    let body;
+    if (!r) body = '<p class="muted">Working it out…</p>';
+    else if (r.error) body = `<p class="muted">${esc(r.error)}</p>`;
+    else {
+      const s = r.summary;
+      const name = id => {
+        const x = S.nodes.get(id);
+        return x ? x.qname || x.name : id;
+      };
+      const groups = new Map();
+      for (const it of r.items) {
+        if (!groups.has(it.relation)) groups.set(it.relation, []);
+        groups.get(it.relation).push(it);
+      }
+      const ordered = [...groups.entries()].sort((a, b) => b[1][0].score - a[1][0].score);
+      const list = ordered
+        .map(([rel, items]) => `<details open><summary>${esc((r.labels && r.labels.relations[rel]) || rel)} <span class="muted">${items.length}</span></summary><ul class="rel imp">${items
+          .map(it => {
+            const via = it.depth > 1 && it.via ? ` <span class="muted">via ${esc(name(it.via))}</span>` : '';
+            const tags = (it.uncertain ? '<span class="tag uncertain" title="Matched by name only">by name</span>' : '') + (it.test ? '<span class="tag">test</span>' : '');
+            const site = it.site ? ` <a class="site" data-open-file="${esc(it.site.file)}" data-open-line="${it.site.line}" data-side="target" title="${esc(it.site.file + ':' + it.site.line)}">↗</a>` : '';
+            return `<li class="imp-${it.tier}"><span class="risk" title="Risk ${it.score} of 100 (${it.tier})">${it.score}</span>${nodeChip(it.id)}${via}${tags}${site}</li>`;
+          })
+          .join('')}</ul></details>`)
+        .join('');
+      body = `<div class="impsum"><span class="pill imp-${s.tier}" title="Overall risk ${s.overall} of 100">${s.tier} risk</span>
+          <span>${s.count ? `${s.count} place${s.count === 1 ? '' : 's'} in ${s.files} file${s.files === 1 ? '' : 's'} may need attention` : 'Nothing in the graph depends on it'}</span></div>
+        ${s.count ? `<div class="impcounts"><span class="imp-high">${s.high} high</span><span class="imp-medium">${s.medium} medium</span><span class="imp-low">${s.low} low</span></div>` : ''}
+        <ul class="impnotes">${s.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+        ${s.count ? '<div class="askrow"><button id="impShow" class="hltoggle"></button></div>' : ''}
+        ${list}${r.truncated ? '<p class="muted">Only the 300 most affected are listed.</p>' : ''}`;
+    }
+    el.innerHTML = head + body;
+    el.querySelectorAll('[data-change]').forEach(b => {
+      b.onclick = () => {
+        if (S.impact.changeType === b.dataset.change) return;
+        S.impact.changeType = b.dataset.change;
+        S.impact.result = null;
+        requestImpact(false);
+      };
+    });
+    if ($('impShow')) {
+      $('impShow').onclick = () => (impactOn() ? setHighlight(null) : applyImpactHighlight());
+      syncImpactToggle();
+    }
+    bindLinks(el);
   }
 
   function aggregatedDeps(id) {
@@ -2149,8 +2300,8 @@
     if (quiet && S.tab === 'ai' && S.ai.busy) return;
     S.tab = tab;
     document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-    $('tab-details').classList.toggle('hidden', tab !== 'details');
-    $('tab-ai').classList.toggle('hidden', tab !== 'ai');
+    for (const t of ['details', 'ai', 'impact']) $('tab-' + t).classList.toggle('hidden', tab !== t);
+    if (tab === 'impact') renderImpact();
   }
 
   // ---------------------------------------------------------------------------
@@ -2785,6 +2936,7 @@
       case 'graph':
         // The code may have changed: check again (the extension answers from its cache when it hasn't).
         for (const e of S.summaries.values()) e.stale = true;
+        if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
         if (m.compare) S.compare = m.compare;
         loadGraph(m.graph, m.mode, m.title, m.compare);
         renderSuggestions();
@@ -2811,6 +2963,9 @@
         break;
       case 'summary':
         onSummary(m);
+        break;
+      case 'impactResult':
+        onImpact(m);
         break;
       case 'aiHistory':
         S.history = m.entries || [];

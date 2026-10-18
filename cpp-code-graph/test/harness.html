@@ -38,6 +38,16 @@
           : { unavailable: true };
         setTimeout(() => window.postMessage({ type: 'summary', id: m.id, ...reply }, '*'), 120);
       }
+      // Change impact: computed with the real src/ai/impact.js, like the extension does.
+      if (m.type === 'impact') {
+        const { predictImpact, RELATION_LABELS, CHANGE_TYPES } = load('impact');
+        const { GraphTools } = load('graphTools');
+        const f = window.__FIXTURES;
+        const graph = location.search.includes('diff') ? f.diff : f.graph;
+        if (!window.__tools || window.__tools.graph !== graph) window.__tools = new GraphTools(graph);
+        const result = predictImpact(window.__tools, m.id, m.changeType);
+        setTimeout(() => window.postMessage({ type: 'impactResult', id: m.id, requested: m.changeType, ...result, labels: { relations: RELATION_LABELS, changes: CHANGE_TYPES } }, '*'), 20);
+      }
       // History, kept like the extension does (newest first).
       if (m.type === 'aiHistoryDelete') postHistory(window.__history.filter(e => e.id !== m.id));
       if (m.type === 'aiHistoryClear') postHistory([]);
@@ -52,6 +62,18 @@
     getState() { return null; },
     setState() {}
   });
+
+  // A minimal CommonJS loader for the extension's own modules in src/ai/ (no vscode dependency).
+  const loaded = {};
+  function load(name) {
+    if (loaded[name]) return loaded[name].exports;
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', '../src/ai/' + name + '.js', false);
+    xhr.send();
+    const module = (loaded[name] = { exports: {} });
+    new Function('require', 'module', 'exports', xhr.responseText)(p => load(p.replace(/^\.\//, '').replace(/\.js$/, '')), module, module.exports);
+    return module.exports;
+  }
 
   window.__history = [];
   function postHistory(entries) {

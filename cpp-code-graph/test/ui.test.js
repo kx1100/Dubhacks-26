@@ -372,6 +372,67 @@ async function main() {
     await evaluate(`document.querySelector('.tabs [data-tab="details"]').click(); cg.reveal(nodeByName('render').id, { center: false }); true`);
     assert(await evaluate("waitFor(() => !document.getElementById('aiSum') || document.getElementById('aiSum').tagName === 'SPAN')"), 'no block without a model');
 
+    // 17. Change impact: from the details panel, ranked by risk, colored on the graph, per kind of change.
+    await open('');
+    await evaluate("document.querySelector('.tabs [data-tab=\"impact\"]').click(); true");
+    assert.match(await evaluate("document.getElementById('tab-impact').textContent"), /What if I change this\?/);
+    await evaluate(`cg.reveal(nodeByName('log_message').id, { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); window.__sent.length = 0; document.querySelector('[data-act="impact"]').click(); true`);
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impact'))")), ['id', 'changeType']), { id: await evaluate("nodeByName('log_message').id"), changeType: 'signature' });
+    assert(await evaluate("waitFor(() => document.querySelector('#tab-impact .impsum'))"), 'impact shown');
+    const impact = () => evaluate(`JSON.stringify({
+      tab: cg.S.tab,
+      change: document.querySelector('.impchange .active').dataset.change,
+      sum: document.querySelector('.impsum').textContent.replace(/\\s+/g, ' ').trim(),
+      groups: [...document.querySelectorAll('#tab-impact details > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
+      items: [...document.querySelectorAll('#tab-impact ul.imp li')].map(li => li.className + ' ' + li.querySelector('.risk').textContent + ' ' + li.querySelector('.chip').textContent.trim()),
+      notes: [...document.querySelectorAll('.impnotes li')].map(li => li.textContent),
+      predict: !!document.querySelector('#tab-impact .predict'),
+      shown: (document.getElementById('impShow') || {}).ariaPressed || document.getElementById('impShow') && document.getElementById('impShow').getAttribute('aria-pressed'),
+      label: cg.S.highlight && cg.S.highlight.label,
+      high: [...document.querySelectorAll('#layerNodes .node.imp-high')].map(g => cg.S.nodes.get(g.dataset.id).name),
+      target: [...document.querySelectorAll('#layerNodes .node.imp-target')].map(g => cg.S.nodes.get(g.dataset.id).name)
+    })`).then(JSON.parse);
+    let im = await impact();
+    assert.strictEqual(im.tab, 'impact');
+    assert.strictEqual(im.change, 'signature');
+    assert.strictEqual(im.sum, 'high risk 5 places in 3 files may need attention');
+    assert.deepStrictEqual(im.groups, ['Calls it directly 2', 'Includes its header 3']);
+    assert.deepStrictEqual(im.items.slice(0, 2).map(s => s.split(' ').slice(0, 2).join(' ')), ['imp-high 100', 'imp-high 100']);
+    assert.ok(im.items.slice(2).every(s => s.startsWith('imp-low')));
+    assert.ok(im.predict, 'labelled as a prediction');
+    assert.match(im.notes.join(' '), /declared in the header c\/logger.h/);
+    assert.strictEqual(im.shown, 'true');
+    assert.strictEqual(im.label, 'Impact: signature of log_message');
+    assert.deepStrictEqual(im.target, ['log_message']);
+    // Callers inside collapsed files color the file they are in.
+    assert.ok(im.high.length >= 1, 'high-risk nodes are colored: ' + JSON.stringify(im));
+    // Another kind of change is worked out again.
+    await evaluate("window.__sent.length = 0; document.querySelector('[data-change=\"behavior\"]').click(); true");
+    assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impact'))")).changeType, 'behavior');
+    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'behavior' && document.querySelector('#tab-impact .impsum'))"), 'behavior shown');
+    im = await impact();
+    assert.deepStrictEqual([im.change, im.groups], ['behavior', ['Calls it directly 2']]);
+    assert.strictEqual(im.label, 'Impact: behavior of log_message');
+    // The switch turns the coloring off and on; clearing the highlight turns it off.
+    await evaluate("document.getElementById('impShow').click(); true");
+    im = await impact();
+    assert.deepStrictEqual([im.shown, im.label, im.high.length, im.target.length], ['false', null, 0, 0]);
+    await evaluate("document.getElementById('impShow').click(); true");
+    assert.strictEqual((await impact()).shown, 'true');
+    await evaluate("document.getElementById('hlClear').click(); true");
+    assert.strictEqual((await impact()).shown, 'false');
+    // A header: renaming it breaks every file that includes it.
+    await evaluate(`cg.reveal('file:c/logger.h', { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="impact"]').click(); true`);
+    assert(await evaluate("waitFor(() => cg.S.impact.target === 'file:c/logger.h' && cg.S.impact.result)"), 'header impact');
+    assert.strictEqual(await evaluate("document.querySelector('[data-change=\"signature\"]').textContent"), 'Interface');
+    await evaluate("document.querySelector('[data-change=\"rename\"]').click(); true");
+    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'rename')"));
+    im = await impact();
+    assert.deepStrictEqual(im.groups, ['Includes the file 3'], 'logger.c includes it too, which outranks implementing it');
+    // Folders have no button.
+    await evaluate(`cg.reveal('dir:src', { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); true`);
+    assert.strictEqual(await evaluate("!!document.querySelector('[data-act=\"impact\"]')"), false);
+
     console.log('ui: ok');
     ws.close();
   } finally {

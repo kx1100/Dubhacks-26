@@ -11,6 +11,7 @@ const { askQuestion } = require('./ai');
 const { selectModel, streamText } = require('./ai/model');
 const { GraphTools } = require('./ai/graphTools');
 const { contentKey, summarize } = require('./ai/summaries');
+const { predictImpact, RELATION_LABELS, CHANGE_TYPES } = require('./ai/impact');
 
 const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
@@ -115,6 +116,9 @@ class GraphPanel {
         break;
       case 'getSummary':
         await this.getSummary(m);
+        break;
+      case 'impact':
+        this.sendImpact(m);
         break;
       case 'cancelAsk':
         if (this.aiCancel) this.aiCancel.cancel();
@@ -290,16 +294,32 @@ class GraphPanel {
     return doc.getText();
   }
 
+  /** GraphTools for the graph on screen, built once per graph. */
+  graphTools() {
+    const graph = this.compare ? this.compare.graph : this.index.graph;
+    if (!graph) return null;
+    let tools = this.toolsByGraph.get(graph);
+    if (!tools) this.toolsByGraph.set(graph, (tools = new GraphTools(graph, { readSource: file => this.readTarget(file) })));
+    return tools;
+  }
+
+  // ---- Change impact ------------------------------------------------------------------
+
+  /** Replies to impact {id, changeType} with the predicted impact of changing that node. */
+  sendImpact(m) {
+    const tools = this.graphTools();
+    const result = tools ? predictImpact(tools, m.id, m.changeType) : { error: 'The graph is not ready yet.' };
+    this.post({ type: 'impactResult', id: m.id, requested: m.changeType, ...result, labels: { relations: RELATION_LABELS, changes: CHANGE_TYPES } });
+  }
+
   // ---- AI node summaries (cached per workspace until the code changes) ------------
 
   /** Replies to the webview's getSummary {id, refresh} with a summary of that node. */
   async getSummary(m) {
     const reply = { type: 'summary', id: m.id };
     if (vscode.workspace.getConfiguration('codeGraph').get('aiSummaries') === false) return this.post({ ...reply, disabled: true });
-    const graph = this.compare ? this.compare.graph : this.index.graph;
-    if (!graph) return this.post({ ...reply, disabled: true });
-    let tools = this.toolsByGraph.get(graph);
-    if (!tools) this.toolsByGraph.set(graph, (tools = new GraphTools(graph, { readSource: file => this.readTarget(file) })));
+    const tools = this.graphTools();
+    if (!tools) return this.post({ ...reply, disabled: true });
     const node = tools.nodes.get(m.id);
     const key = contentKey(tools, node);
     if (!key) return this.post({ ...reply, disabled: true });

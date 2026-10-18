@@ -243,5 +243,14 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   vscode.lm.selectChatModels = async () => [];
   await onMessage({ type: 'getSummary', id: renderId, refresh: true });
   if (!lastSummary().unavailable) throw new Error('missing model not reported');
+
+  // Change impact, computed in the extension host.
+  posted.length = 0;
+  const logId = g.graph.nodes.find(n => n.name === 'log_message').id;
+  await onMessage({ type: 'impact', id: logId, changeType: 'remove' });
+  const imp = posted.find(m => m.type === 'impactResult');
+  if (!imp || imp.id !== logId || imp.requested !== 'remove' || imp.changeType !== 'remove' || imp.summary.high < 2 || !imp.labels.relations.caller) throw new Error('bad impact ' + JSON.stringify(imp && imp.summary));
+  await onMessage({ type: 'impact', id: 'dir:src', changeType: 'remove' });
+  if (!posted.filter(m => m.type === 'impactResult').pop().error) throw new Error('folder impact should be refused');
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });

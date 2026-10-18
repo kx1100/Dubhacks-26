@@ -1384,3 +1384,93 @@ ol.route {
   background: var(--purple);
   cursor: default;
 }
+
+/* Change impact */
+
+:root {
+  --imp-high: var(--red);
+  --imp-medium: var(--orange);
+  --imp-low: var(--yellow);
+}
+.node.imp-high .box {
+  stroke: var(--imp-high);
+  stroke-width: 3px;
+  fill: color-mix(in srgb, var(--imp-high) 18%, var(--node-bg));
+  filter: none;
+}
+.node.imp-medium .box {
+  stroke: var(--imp-medium);
+  stroke-width: 2.5px;
+  fill: color-mix(in srgb, var(--imp-medium) 14%, var(--node-bg));
+  filter: none;
+}
+.node.imp-low .box {
+  stroke: var(--imp-low);
+  stroke-width: 2px;
+  fill: color-mix(in srgb, var(--imp-low) 8%, var(--node-bg));
+  filter: none;
+}
+.node.imp-target .box {
+  stroke: var(--focus);
+  stroke-width: 3px;
+  stroke-dasharray: 5 3;
+  filter: drop-shadow(0 0 5px var(--focus));
+}
+.imphead {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.impchange {
+  display: flex;
+  margin-bottom: 6px;
+}
+.predict {
+  font-size: 11px;
+  color: var(--muted);
+  border-left: 3px solid var(--yellow);
+  padding: 2px 8px;
+  margin: 6px 0 10px;
+}
+.impsum {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pill.imp-high { color: var(--imp-high); }
+.pill.imp-medium { color: var(--imp-medium); }
+.pill.imp-low { color: var(--imp-low); }
+.impcounts {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  margin: 6px 0;
+}
+.impcounts .imp-high { color: var(--imp-high); }
+.impcounts .imp-medium { color: var(--imp-medium); }
+.impcounts .imp-low { color: var(--imp-low); }
+ul.impnotes {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+ul.imp li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+ul.imp .risk {
+  display: inline-block;
+  min-width: 26px;
+  text-align: center;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #000;
+}
+ul.imp .imp-high .risk { background: var(--imp-high); }
+ul.imp .imp-medium .risk { background: var(--imp-medium); }
+ul.imp .imp-low .risk { background: var(--imp-low); }
