@@ -2303,7 +2303,8 @@
       return;
     }
     const confTitle = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
-    const conf = !a.busy && a.confidence ? `<span class="pill sm conf conf-${a.confidence}" title="${esc(confTitle[a.confidence] || '')}">${esc(a.confidence)} confidence</span>` : '';
+    const confWhy = a.confidenceReason ? `${a.confidence}: ${a.confidenceReason}` : confTitle[a.confidence] || '';
+    const conf = !a.busy && a.confidence ? `<span class="pill sm conf conf-${a.confidence}" title="${esc(confWhy)}">${esc(a.confidence)} confidence</span>` : '';
     const modeLabel = a.mode && a.mode !== 'ask' && AI_MODES[a.mode] ? `<span class="pill sm">${esc(AI_MODES[a.mode].label)}</span> ` : '';
     const when = a.fromHistory && a.time ? ` <span class="muted when">· ${esc(ago(a.time))}</span>` : '';
     const again = a.fromHistory ? '<button id="aiAgain" title="Ask this question again with the current code">Ask again</button>' : '';
@@ -2402,7 +2403,7 @@
   function openHistory(e) {
     S.ai = {
       busy: false, question: e.question, mode: e.mode, steps: (e.steps || []).map((s, i) => ({ ...s, i })),
-      answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, routes: e.routes, routeIdx: 0, evidence: e.evidence, confidence: e.confidence,
+      answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, routes: e.routes, routeIdx: 0, evidence: e.evidence, confidence: e.confidence, confidenceReason: e.confidenceReason,
       model: e.model, entryId: e.id, time: e.time, fromHistory: true
     };
     S.visited = null;
@@ -2823,7 +2824,7 @@
       case 'aiResult':
         S.ai = {
           busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], stepsOpen: S.ai.stepsOpen,
-          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, routes: m.routes, routeIdx: 0, evidence: m.evidence, confidence: m.confidence, model: m.model,
+          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, routes: m.routes, routeIdx: 0, evidence: m.evidence, confidence: m.confidence, confidenceReason: m.confidenceReason, model: m.model,
           entryId: m.entryId, time: m.time
         };
         S.visited = null;

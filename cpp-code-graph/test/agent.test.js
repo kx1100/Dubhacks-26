@@ -116,13 +116,16 @@ const call = (name, input) => ({ name, input });
   // Highlight: known nodes only, plus everything referenced, on the path or cited.
   assert.ok(!res.highlight.includes(undefined) && res.highlight.every(id => graph.nodes.some(n => n.id === id)));
   for (const n of ['main', 'render', 'log_message', 'plot', 'geo::Shape::draw']) assert.ok(res.highlight.includes(idOf(n)), 'highlight ' + n);
-  assert.strictEqual(res.confidence, 'high');
+  // Only 1 of the 5 functions it cites was read, so the model's "high" is not enough.
+  assert.strictEqual(res.confidence, 'medium');
+  assert.strictEqual(res.confidenceReason, 'read the code of 1 of the 5 functions it cites; 2 cited source lines; 1 call matched by name only');
 
   // 2. A path hop with no call edge is kept but marked inferred.
   llm = scripted([{ calls: [call('finish', { answer: 'x', path: `${ref('main')} -> ${ref('plot')}`, confidence: 'medium' })] }]);
   res = await investigate(graph, 'q', { llm, readSource });
   assert.deepStrictEqual(res.hops.map(h => h.inferred), [true]);
-  assert.strictEqual(res.confidence, 'medium');
+  assert.strictEqual(res.confidence, 'low', 'nothing was checked');
+  assert.strictEqual(res.confidenceReason, 'read none of the 2 functions it cites; no cited source lines; 1 path step with no known call');
 
   // 3. The step limit forces finish on the last round.
   llm = scripted([
@@ -137,7 +140,9 @@ const call = (name, input) => ({ name, input });
   const last = llm.seen[2].messages[llm.seen[2].messages.length - 1];
   assert.ok(last.results && /call finish/.test(last.text), 'stop request rides on the tool results');
   assert.strictEqual(res.answer, 'forced');
-  assert.strictEqual(res.confidence, 'low');
+  // An invalid rating is ignored; looking things up earns medium, and being forced to stop keeps it there.
+  assert.strictEqual(res.confidence, 'medium');
+  assert.match(res.confidenceReason, /stopped at the step limit/);
 
   // 4. A plain-text reply without finish is the answer.
   llm = scripted([{ text: `It starts in [[${ref('main')}]].` }]);
@@ -145,6 +150,32 @@ const call = (name, input) => ({ name, input });
   assert.strictEqual(res.answer, `It starts in [[${idOf('main')}]].`);
   assert.deepStrictEqual(res.highlight, [idOf('main')]);
   assert.strictEqual(res.confidence, 'low');
+  assert.strictEqual(res.confidenceReason, 'read none of the 1 function it cites; no cited source lines');
+
+  // 4b. No reply at all is a failure, not a rating.
+  llm = scripted([{}]);
+  res = await investigate(graph, 'q', { llm, readSource });
+  assert.deepStrictEqual([res.confidence, res.confidenceReason], ['low', 'no answer was produced']);
+
+  // 4c. Confidence comes from what was checked; the model's own rating can only lower it.
+  const rated = async (rating, rounds, finishExtra) => {
+    const read = [call('read_code', { node: ref('main') }), call('read_code', { node: ref('render') })];
+    const finish = { answer: `[[${ref('main')}]] calls [[${ref('render')}]].`, evidence: [{ file: 'src/main.cpp', line: 15, claim: 'the call' }], confidence: rating, ...finishExtra };
+    llm = scripted([...(rounds === 0 ? [] : [{ calls: read }]), { calls: [call('finish', finish)] }]);
+    return investigate(graph, 'q', { llm, readSource });
+  };
+  res = await rated('high', 1);
+  assert.deepStrictEqual([res.confidence, res.confidenceReason], ['high', 'read the code of 2 of the 2 functions it cites; 1 cited source line']);
+  assert.strictEqual((await rated(undefined, 1)).confidence, 'high', 'a missing rating is not held against the answer');
+  assert.strictEqual((await rated('medium', 1)).confidence, 'medium');
+  res = await rated('low', 1);
+  assert.deepStrictEqual([res.confidence, res.confidenceReason.endsWith('the model was unsure')], ['medium', true]);
+  // A cited line without reading the code is medium; with nothing at all it is low.
+  assert.strictEqual((await rated('high', 0)).confidence, 'medium');
+  assert.strictEqual((await rated('high', 0, { evidence: [] })).confidence, 'low');
+  // An inferred step caps it at medium even with the code read.
+  res = await rated('high', 1, { path: [ref('main'), ref('plot')] });
+  assert.deepStrictEqual([res.confidence, /1 path step with no known call/.test(res.confidenceReason)], ['medium', true]);
 
   // 5. Repeated tool calls are answered from the cache; bad tools and bad args don't throw.
   reads = 0;

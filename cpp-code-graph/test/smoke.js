@@ -140,7 +140,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (sent[1].role !== 'assistant' || sent[1].content[0].value !== 'Checking main.' || sent[1].content[1].callId !== 't1') throw new Error('assistant turn not replayed');
   if (!(sent[2].content[0] instanceof vscode.LanguageModelToolResultPart) || sent[2].content[0].callId !== 't1') throw new Error('tool result not sent');
   if (steps.length !== 2 || steps[1].step.tool !== 'neighbors' || !steps[1].step.nodeIds.length) throw new Error('bad steps ' + JSON.stringify(steps));
-  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
+  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'medium' || !/^read none of the 2 functions it cites; 1 cited source line$/.test(tres.confidenceReason) || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
   console.log('agent answer:', tres.answer);
 
   // Stop during an investigation still ends with a (cancelled) result, so the panel is not left busy.

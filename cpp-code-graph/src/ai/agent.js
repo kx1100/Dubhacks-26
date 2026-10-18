@@ -105,7 +105,7 @@ const TOOLS = [
             required: ['claim']
           }
         },
-        confidence: { type: 'string', enum: ['high', 'medium', 'low'], description: 'high: you read the code that shows it. medium: inferred from graph structure. low: partly guessed.' }
+        confidence: { type: 'string', enum: ['high', 'medium', 'low'], description: 'How sure you are. high: you read the code of the functions the answer depends on. medium: based on the graph structure, or on only part of the code. low: you could not find the relevant code, or you are guessing. It is combined with checks on your evidence, so do not round it down out of caution.' }
       },
       required: ['answer', 'confidence']
     }
@@ -219,11 +219,15 @@ async function investigate(graph, question, opts) {
   const cache = new Map();
   let final = null;
   let lastText = '';
+  const readIds = new Set(); // nodes whose code the model read
+  let toolCalls = 0; // lookups beyond the head start
+  let forced = null; // why the model was made to finish, if it was
 
   for (let round = 0; round < maxSteps && !final; round++) {
     if (token.isCancellationRequested) break;
     const mustFinish = round === maxSteps - 1 || used > budget;
-    if (mustFinish && round > 0) messages[messages.length - 1].text = 'Stop investigating now and call finish with the best answer you have. Lower the confidence if needed.';
+    if (mustFinish) forced = round === maxSteps - 1 ? 'step limit' : 'context limit';
+    if (mustFinish && round > 0) messages[messages.length - 1].text = 'Stop investigating now and call finish with the best answer you have. Say in the answer what you could not check.';
     const reply = await llm.send(messages, { tools: mustFinish ? modeTools.filter(t => t.name === 'finish') : modeTools, forceTool: mustFinish ? 'finish' : null }, token);
     const calls = reply.calls || [];
     lastText = reply.text || '';
@@ -244,6 +248,8 @@ async function investigate(graph, question, opts) {
         cache.set(key, r);
       }
       step({ tool: call.name, args: call.input || {}, summary: summarize(tools, call.name, call.input || {}, r), nodeIds: r.nodeIds || [], note: reply.text ? reply.text.trim().slice(0, 300) : undefined });
+      toolCalls++;
+      if (call.name === 'read_code') for (const id of r.nodeIds || []) readIds.add(id);
       const text = r.text.length > RESULT_CHARS ? r.text.slice(0, RESULT_CHARS) + '\n(truncated)' : r.text;
       results.push({ id: call.id, text });
       used += text.length;
@@ -251,8 +257,10 @@ async function investigate(graph, question, opts) {
     if (!final) messages.push({ role: 'user', results });
   }
 
-  const raw = final || { answer: lastText || (token.isCancellationRequested ? '_Cancelled._' : 'The investigation ended without an answer.'), confidence: 'low' };
-  return { ...validate(tools, raw), steps: steps.length, model: llm.name || null };
+  // A plain-text reply is a normal answer; its confidence comes from the evidence, like any other.
+  const failed = !final && !lastText;
+  const raw = final || { answer: lastText || (token.isCancellationRequested ? '_Cancelled._' : 'The investigation ended without an answer.') };
+  return { ...validate(tools, raw, { readIds, toolCalls, forced, failed }), steps: steps.length, model: llm.name || null };
 }
 
 async function runTool(tools, name, a) {
@@ -317,7 +325,7 @@ function summarize(tools, name, a, r) {
  * nodes are dropped, path hops without a call edge are marked inferred, and
  * evidence gets a location when it names a node.
  */
-function validate(tools, raw) {
+function validate(tools, raw, ctx) {
   const toId = x => {
     const n = tools.resolve(x);
     return n && n.kind !== 'dir' ? n.id : null;
@@ -360,9 +368,9 @@ function validate(tools, raw) {
   }
 
   const highlight = [...new Set([...list(raw.highlight).map(toId).filter(Boolean), ...referenced, ...path, ...evidence.map(e => e.nodeId).filter(Boolean)])];
-  const confidence = ['high', 'medium', 'low'].includes(raw.confidence) ? raw.confidence : 'low';
+  const rated = rateConfidence(tools, { referenced, routes, evidence }, raw.confidence, ctx || { readIds: new Set(), toolCalls: 0, forced: null, failed: false });
   const routeIds = routes.flatMap(r => r.steps.map(s => s.id));
-  return { answer, highlight: [...new Set([...highlight, ...routeIds])], path, hops, routes, evidence, confidence };
+  return { answer, highlight: [...new Set([...highlight, ...routeIds])], path, hops, routes, evidence, confidence: rated.confidence, confidenceReason: rated.reason };
 }
 
 /**
@@ -417,4 +425,61 @@ function hopInfo(tools, from, to) {
   return { inferred: true, site: null };
 }
 
-module.exports = { investigate, validate, toolsFor, TOOLS };
+/**
+ * How far to trust an answer, from what can be checked, with the reason:
+ *   high   - the code of the functions it cites was read (at least half of them,
+ *            or three), a source line backs it, and every path step is a known call
+ *   medium - some code was read, a line is cited, or the graph was explored
+ *   low    - none of that, or no answer
+ * Inferred path steps and being forced to stop cap it at medium. The model's own
+ * rating can only lower it: "medium" caps at medium, "low" drops it a level.
+ * @param {string} [rating] the model's own rating
+ */
+function rateConfidence(tools, { referenced, routes, evidence }, rating, ctx) {
+  const callable = id => {
+    const n = tools.nodes.get(id);
+    return !!n && (n.kind === 'function' || n.kind === 'method');
+  };
+  const cited = new Set([...referenced, ...routes.flatMap(r => r.steps.map(s => s.id))].filter(callable));
+  const reads = [...cited].filter(id => ctx.readIds.has(id)).length;
+  const readAny = ctx.readIds.size > 0;
+  const located = evidence.filter(e => e.file && e.line).length;
+  // Alternative routes repeat the main route's steps, so count each hop once.
+  const hopsSeen = new Set();
+  let inferred = 0;
+  let byName = 0;
+  for (const r of routes) {
+    r.steps.forEach((s, i) => {
+      const key = i && r.steps[i - 1].id + '>' + s.id;
+      if (!i || hopsSeen.has(key)) return;
+      hopsSeen.add(key);
+      if (s.inferred) inferred++;
+      else if (s.uncertain && !s.dispatch) byName++;
+    });
+  }
+
+  let level;
+  if (ctx.failed) level = 0;
+  else if (readAny && located >= 1 && inferred === 0 && (cited.size ? reads >= 1 && (reads * 2 >= cited.size || reads >= 3) : true)) level = 2;
+  else if (readAny || located >= 1 || ctx.toolCalls > 0) level = 1;
+  else level = 0;
+  if (inferred || ctx.forced) level = Math.min(level, 1);
+  if (rating === 'medium') level = Math.min(level, 1);
+  else if (rating === 'low') level = Math.max(0, Math.min(level, 2) - 1);
+
+  const parts = [];
+  const s = n => (n === 1 ? '' : 's');
+  if (ctx.failed) parts.push('no answer was produced');
+  else {
+    if (cited.size) parts.push(reads ? `read the code of ${reads} of the ${cited.size} function${s(cited.size)} it cites` : `read none of the ${cited.size} function${s(cited.size)} it cites`);
+    else parts.push(readAny ? 'read the code it describes' : 'read no code');
+    parts.push(located ? `${located} cited source line${s(located)}` : 'no cited source lines');
+    if (inferred) parts.push(`${inferred} path step${s(inferred)} with no known call`);
+    if (byName) parts.push(`${byName} call${s(byName)} matched by name only`);
+    if (ctx.forced) parts.push(`stopped at the ${ctx.forced}`);
+    if (rating === 'low') parts.push('the model was unsure');
+  }
+  return { confidence: ['low', 'medium', 'high'][level], reason: parts.join('; ') };
+}
+
+module.exports = { investigate, validate, rateConfidence, toolsFor, TOOLS };

@@ -363,6 +363,7 @@ class GraphPanel {
       routes: result.routes,
       evidence: result.evidence,
       confidence: result.confidence,
+      confidenceReason: result.confidenceReason,
       model: result.model,
       // Enough of each step to show the timeline and re-highlight its nodes.
       steps: steps.map(s => ({ tool: s.tool, summary: s.summary, note: s.note, nodeIds: (s.nodeIds || []).slice(0, HISTORY_STEP_NODES) })),

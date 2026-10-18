@@ -202,6 +202,7 @@ async function main() {
     assert.strictEqual(done.chips, 4);
     assert.deepStrictEqual(done.evidence, ['canvas.cpp:18', 'main.cpp:15']);
     assert.strictEqual(done.conf, 'high confidence');
+    assert.strictEqual(await evaluate("document.querySelector('#answer .conf').title"), 'high: read the code of 2 of the 2 functions it cites; 2 cited source lines');
     assert.strictEqual(done.mode, 'Trace path');
     assert.strictEqual(done.path, 4, 'answer path is numbered in the graph');
     assert.match(done.summary, /Investigation\s+3 steps/);
