@@ -163,60 +163,72 @@ async function main() {
     await evaluate(`(() => { const b = document.querySelector('#layerBadges .badge'); window.__badgeTarget = b.dataset.badge; click(b); })()`);
     assert.strictEqual(await evaluate('cg.S.selected'), await evaluate('window.__badgeTarget'), 'clicking a label selects the node it names');
 
-    // 13. Ask AI: the mode chip is sent with the question, steps stream into a timeline,
-    //     the current step's nodes are marked, and the answer shows evidence and confidence.
+    // 13. Ask AI: the Trace chip is sent with the question, the current step is shown live,
+    //     its nodes are marked, and the answer's strip opens steps, evidence and confidence.
     await open('?ai');
     await evaluate("document.querySelector('.tabs [data-tab=\"ai\"]').click(); true");
-    const modes = await evaluate("[...document.querySelectorAll('#aiModes button')].map(b => b.dataset.aiMode + (b.classList.contains('active') ? '*' : ''))");
-    assert.deepStrictEqual(modes, ['ask*', 'path']);
-    await evaluate("document.querySelector('[data-ai-mode=\"path\"]').click(); true");
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'false');
+    assert.strictEqual(await evaluate("document.getElementById('suggestions').classList.contains('hidden')"), false, 'suggestions show while the box is empty');
+    assert.strictEqual(await evaluate("!!document.getElementById('historyBtn')"), false, 'no history button without history');
+    await evaluate("document.getElementById('traceChip').click(); true");
     assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'true');
+    assert.strictEqual(await evaluate("document.getElementById('askBtn').textContent"), 'Trace');
     assert.match(await evaluate("document.getElementById('question').placeholder"), /What to trace/);
     await evaluate("window.__sent.length = 0; document.getElementById('question').value = 'How are shapes drawn?'; document.getElementById('askBtn').click(); true");
     const askMsg = JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))"));
     assert.strictEqual(askMsg.mode, 'path');
-    assert(await evaluate("waitFor(() => document.querySelectorAll('#aiSteps .stepi').length === 1)"), 'first step shown');
+    assert(await evaluate("waitFor(() => !!document.getElementById('aiLive'))"), 'first step shown');
     const live = JSON.parse(await evaluate(`JSON.stringify({
-      liveRow: !!document.querySelector('#aiSteps .stepi.live'),
+      text: document.getElementById('aiLive').textContent,
       visited: document.querySelectorAll('#layerNodes .node.visited').length,
       stop: !!document.getElementById('cancelAsk'),
-      text: document.querySelector('#answer .a').textContent
+      ask: !!document.getElementById('askBtn')
     })`));
-    assert(live.liveRow && live.visited > 0 && live.stop, 'live step marks nodes: ' + JSON.stringify(live));
-    assert.match(live.text, /Investigating/);
+    assert(live.visited > 0 && live.stop && !live.ask, 'live step marks nodes, Stop replaces Ask: ' + JSON.stringify(live));
+    assert.match(live.text, /Searched the question → 3 symbols…\s*1 step/);
+    // The steps so far open from the live line.
+    await evaluate("document.querySelector('#aiLive [data-open=\"steps\"]').click(); true");
+    assert(await evaluate("waitFor(() => document.querySelectorAll('#aiSteps .stepi.live').length === 1)"), 'live step listed');
     assert(await evaluate("waitFor(() => !cg.S.ai.busy, 3000)"), 'answer arrives');
+    const strip = () => evaluate("JSON.stringify([...document.querySelectorAll('#answer .metastrip [data-open]')].map(b => b.dataset.open + ':' + b.textContent.replace(/[▾▴]/g, '').trim() + (b.getAttribute('aria-expanded') === 'true' ? '*' : '')))").then(JSON.parse);
+    const openDrawer = key => evaluate(`(() => { const b = document.querySelector('#answer .metastrip [data-open="${key}"]'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); return true; })()`);
+    assert.deepStrictEqual(await strip(), ['route:Route 4', 'steps:3 steps*', 'evidence:2 sources', 'conf:high'], 'steps stay open when opened while busy');
     const done = JSON.parse(await evaluate(`JSON.stringify({
       steps: [...document.querySelectorAll('#aiSteps .stepi .st')].map(e => e.textContent),
       live: document.querySelectorAll('#aiSteps .stepi.live').length,
       visited: document.querySelectorAll('#layerNodes .node.visited').length,
       chips: document.querySelectorAll('#answer .a .chip').length,
-      evidence: [...document.querySelectorAll('#answer .evidence a.site')].map(a => a.textContent),
-      conf: (document.querySelector('#answer .conf') || {}).textContent,
-      mode: document.querySelector('#answer .q .pill').textContent,
+      conf: document.querySelector('#answer .metastrip .conf').title,
+      trace: !!document.querySelector('#answer .q .tg'),
       path: cg.S.highlight && cg.S.highlight.path.length,
-      summary: document.querySelector('#aiSteps summary').textContent
+      suggestions: document.getElementById('suggestions').classList.contains('hidden'),
+      cancel: !!document.getElementById('cancelAsk')
     })`));
     assert.deepStrictEqual(done.steps, ['Searched the question → 3 symbols', 'Outgoing calls of geo::Canvas::render (4)', 'Read the code of geo::Canvas::render']);
     assert.strictEqual(done.live, 0);
     assert.strictEqual(done.visited, 0, 'visited marks clear when the answer arrives');
     assert.strictEqual(done.chips, 4);
-    assert.deepStrictEqual(done.evidence, ['canvas.cpp:18', 'main.cpp:15']);
-    assert.strictEqual(done.conf, 'high confidence');
-    assert.strictEqual(await evaluate("document.querySelector('#answer .conf').title"), 'high: read the code of 2 of the 2 functions it cites; 2 cited source lines');
-    assert.strictEqual(done.mode, 'Trace path');
+    assert.strictEqual(done.conf, 'high: read the code of 2 of the 2 functions it cites; 2 cited source lines');
+    assert.strictEqual(done.trace, true, 'a traced question is marked');
     assert.strictEqual(done.path, 4, 'answer path is numbered in the graph');
-    assert.match(done.summary, /Investigation\s+3 steps/);
+    assert.strictEqual(done.suggestions, true, 'suggestions hide once something was asked');
+    assert.strictEqual(done.cancel, false);
+    await openDrawer('evidence');
+    assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#answer .evidence a.site')].map(a => a.textContent))")), ['canvas.cpp:18', 'main.cpp:15']);
+    assert.deepStrictEqual(await strip(), ['route:Route 4', 'steps:3 steps', 'evidence:2 sources*', 'conf:high'], 'one drawer at a time');
+    await openDrawer('conf');
+    assert.match(await evaluate("document.querySelector('#answer .confbox').textContent"), /High confidence\. read the code of 2/);
     // The question box is cleared once the answer arrives.
     assert.strictEqual(await evaluate("document.getElementById('question').value"), '');
     // The answer's highlight can be switched off and on again, and stays in sync with the banner.
     const toggle = () => evaluate(`JSON.stringify({ on: document.getElementById('aiShow').getAttribute('aria-pressed'), text: document.getElementById('aiShow').textContent, hl: !!cg.S.highlight, path: cg.S.highlight ? cg.S.highlight.path.length : 0 })`).then(JSON.parse);
     let t = await toggle();
-    assert.deepStrictEqual([t.on, t.hl, t.path], ['true', true, 4]);
-    assert.match(t.text, /Highlighted in graph\s*4/);
+    assert.deepStrictEqual([t.on, t.hl, t.path, t.text], ['true', true, 4, '4']);
+    assert.match(await evaluate("document.getElementById('aiShow').getAttribute('aria-label')"), /^Highlighted in graph: 4 nodes/);
     await evaluate("document.getElementById('aiShow').click(); true");
     t = await toggle();
     assert.deepStrictEqual([t.on, t.hl], ['false', false]);
-    assert.match(t.text, /^Highlight in graph/);
     await evaluate("document.getElementById('aiShow').click(); true");
     t = await toggle();
     assert.deepStrictEqual([t.on, t.hl, t.path], ['true', true, 4]);
@@ -226,6 +238,7 @@ async function main() {
     await evaluate("document.getElementById('aiShow').click(); true");
     assert.strictEqual((await toggle()).on, 'true');
     // Hovering a step marks its nodes; clicking it highlights them.
+    await openDrawer('steps');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseenter')); true");
     assert(await evaluate("document.querySelectorAll('#layerNodes .node.visited').length > 0"), 'hover marks the step nodes');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseleave')); true");
@@ -235,6 +248,7 @@ async function main() {
     assert.strictEqual((await toggle()).on, 'false', 'a step highlight is not the answer highlight');
     assert.strictEqual(await evaluate('cg.S.highlight.ids.size'), 3);
     // Evidence links open the cited line.
+    await openDrawer('evidence');
     await evaluate("window.__sent.length = 0; document.querySelector('#answer .evidence a.site').click(); true");
     assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/canvas.cpp', line: 18 });
     // Explain from the details panel always uses Ask.
@@ -243,6 +257,14 @@ async function main() {
 
     // 14. History: answers are kept, newest first; an old one comes back with its steps and highlight.
     assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'), 'second answer saved');
+    // History sits behind a button with its count, in a popover that closes on an outside click.
+    assert.strictEqual(await evaluate("document.getElementById('historyBtn').textContent"), '⟲ 2');
+    assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), true);
+    await evaluate("document.getElementById('historyBtn').click(); true");
+    assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), false);
+    await evaluate("document.getElementById('answer').click(); true");
+    assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), true, 'outside click closes history');
+    await evaluate("document.getElementById('historyBtn').click(); true");
     const hist = () => evaluate(`JSON.stringify([...document.querySelectorAll('#history .histi')].map(li => ({ q: li.querySelector('.hq').textContent, g: li.querySelector('.hg').textContent, active: li.classList.contains('active'), disabled: li.classList.contains('disabled') })))`).then(JSON.parse);
     let rows = await hist();
     assert.strictEqual(rows.length, 2);
@@ -250,18 +272,20 @@ async function main() {
     assert.deepStrictEqual([rows[0].g, rows[0].active, rows[1].q, rows[1].g, rows[1].active], ['?', true, 'How are shapes drawn?', '⤳', false]);
     await evaluate("cg.S.highlight = null; document.querySelectorAll('#history .histi')[1].click(); true");
     const restored = JSON.parse(await evaluate(`JSON.stringify({
-      q: cg.S.ai.question, from: cg.S.ai.fromHistory, mode: document.querySelector('#answer .q .pill').textContent,
+      q: cg.S.ai.question, from: cg.S.ai.fromHistory, trace: !!document.querySelector('#answer .q .tg'),
       when: (document.querySelector('#answer .q .when') || {}).textContent,
-      steps: document.querySelectorAll('#aiSteps .stepi').length, text: document.querySelector('#answer .a').textContent,
+      strip: [...document.querySelectorAll('#answer .metastrip [data-open]')].map(b => b.dataset.open + ':' + b.textContent.replace(/[▾▴]/g, '').trim() + (b.getAttribute('aria-expanded') === 'true' ? '*' : '')),
+      text: document.querySelector('#answer .a').textContent, popover: document.getElementById('history').classList.contains('hidden'),
       toggle: document.getElementById('aiShow').getAttribute('aria-pressed'), path: cg.S.highlight && cg.S.highlight.path.length,
-      evidence: document.querySelectorAll('#answer .evidence a.site').length, again: !!document.getElementById('aiAgain')
+      again: !!document.getElementById('aiAgain')
     })`));
     assert.deepStrictEqual(
-      [restored.q, restored.from, restored.mode, restored.steps, restored.toggle, restored.path, restored.evidence, restored.again],
-      ['How are shapes drawn?', true, 'Trace path', 3, 'true', 4, 2, true]
+      [restored.q, restored.from, restored.trace, restored.strip, restored.popover, restored.toggle, restored.path, restored.again],
+      ['How are shapes drawn?', true, true, ['route:Route 4*', 'steps:3 steps', 'evidence:2 sources', 'conf:high'], true, 'true', 4, true]
     );
     assert.match(restored.text, /About “How are shapes drawn\?”/);
     assert.match(restored.when, /just now/);
+    await evaluate("document.getElementById('historyBtn').click(); true");
     rows = await hist();
     assert.deepStrictEqual(rows.map(r => r.active), [false, true]);
     // Ask again re-asks in the saved mode; history rows are disabled until the answer arrives.
@@ -333,13 +357,16 @@ async function main() {
     assert.match(await evaluate('cg.S.highlight.label'), /\(shutdown\)$/);
     // Restoring from history keeps the routes.
     assert(await evaluate('waitFor(() => cg.S.history.length === 1)'));
-    await evaluate("cg.S.highlight = null; document.querySelector('#history .histi').click(); true");
+    await evaluate("cg.S.highlight = null; document.getElementById('historyBtn').click(); document.querySelector('#history .histi').click(); true");
     r = await route();
     assert.deepStrictEqual(r.tabs, ['main*', 'circle', 'shutdown']);
     assert.deepStrictEqual(r.path, ['main', 'render', 'draw', 'plot']);
     // An Ask answer with a plain path still lists it as a route.
-    await evaluate("document.querySelector('[data-ai-mode=\"ask\"]').click(); document.getElementById('question').value = 'Where does drawing start?'; document.getElementById('askBtn').click(); true");
+    await evaluate("document.getElementById('traceChip').click(); document.getElementById('question').value = 'Where does drawing start?'; document.getElementById('askBtn').click(); true");
+    assert.strictEqual(await evaluate('cg.S.aiMode'), 'ask');
     assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'));
+    assert.strictEqual(await evaluate("document.querySelector('#answer .metastrip [data-open=\"route\"]').getAttribute('aria-expanded')"), 'false', 'an Ask answer keeps its route closed');
+    await evaluate("document.querySelector('#answer .metastrip [data-open=\"route\"]').click(); true");
     r = await route();
     assert.deepStrictEqual([r.tabs, r.path, r.tags], [[], ['main', 'render', 'draw', 'plot'], ['by name']]);
 

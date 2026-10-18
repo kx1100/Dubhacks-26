@@ -779,9 +779,15 @@ ul.rel li {
 
 /* AI panel */
 
+#tab-ai {
+  position: relative;
+}
 .ask textarea {
   width: 100%;
   resize: vertical;
+  min-height: 44px;
+  field-sizing: content;
+  max-height: 200px;
 }
 .askrow {
   display: flex;
@@ -790,28 +796,204 @@ ul.rel li {
   gap: 8px;
   margin: 6px 0;
 }
-.suggestions {
+/* The row under the question box */
+.aiopts {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 4px;
-  margin: 8px 0;
+  margin-top: 4px;
+  min-width: 0;
 }
-.sugg {
-  text-align: left;
-  white-space: normal;
+.opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 170px;
   background: transparent;
   border: 1px solid var(--border);
+  border-radius: 11px;
+  color: var(--muted);
+  padding: 1px 8px;
+  font-size: 11px;
+}
+.opt:hover {
   color: var(--fg);
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+.opt .lbl {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.opt .g {
+  font-weight: 700;
+  color: var(--kc);
+}
+.opt .x {
+  opacity: 0.6;
+  font-size: 10px;
+}
+.opt[aria-pressed='true'] {
+  color: var(--purple);
+  border-color: color-mix(in srgb, var(--purple) 60%, transparent);
+  background: color-mix(in srgb, var(--purple) 12%, transparent);
+}
+.opt.ctx[aria-pressed='true'] {
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(128, 128, 128, 0.15));
+}
+.opt.ctx[aria-pressed='false'] .lbl {
+  text-decoration: line-through;
+}
+.iconbtn {
+  background: transparent;
+  color: var(--muted);
+  padding: 2px 6px;
+}
+.iconbtn:hover,
+.iconbtn[aria-expanded='true'] {
+  color: var(--fg);
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.sugg {
+  color: var(--link);
+  cursor: pointer;
+}
+.sugg:hover {
+  text-decoration: underline;
 }
 .answer {
-  margin-top: 10px;
+  margin-top: 12px;
   line-height: 1.55;
 }
 .answer .q {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   font-weight: 600;
   margin-bottom: 6px;
   padding-left: 8px;
   border-left: 3px solid var(--focus);
+}
+.answer .q.trace {
+  border-left-color: var(--purple);
+}
+.answer .q .tg {
+  color: var(--purple);
+  font-weight: 400;
+}
+.answer .q .when {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.answer .a.err {
+  color: var(--red);
+}
+/* While investigating: the current step */
+.ailive {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin: 4px 0 8px;
+}
+.ailive .sg {
+  color: var(--purple);
+  min-width: 14px;
+  text-align: center;
+  animation: visited-pulse 0.8s ease-in-out infinite alternate;
+}
+.ailive .st {
+  flex: 1;
+  min-width: 0;
+}
+/* Under a finished answer: one strip of toggles, each opening a drawer */
+.metastrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.metastrip .sep {
+  opacity: 0.5;
+  padding: 0 1px;
+}
+.metastrip .end {
+  margin-left: auto;
+}
+.mi {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 5px;
+  font-size: 11px;
+}
+.mi:hover,
+.mi[aria-expanded='true'] {
+  color: var(--fg);
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+.mi .car {
+  font-size: 9px;
+  opacity: 0.7;
+}
+.mi.conf .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.mi.conf-high, .confbox .conf-high { color: var(--green); }
+.mi.conf-medium, .confbox .conf-medium { color: var(--yellow); }
+.mi.conf-low, .confbox .conf-low { color: var(--orange); }
+.mi.hltoggle[aria-pressed='true'] {
+  color: var(--yellow);
+}
+.aidrawer {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  font-size: 12px;
+}
+.aidrawer > ul.rel,
+.aidrawer > ol {
+  margin: 0;
+}
+/* History popover */
+.histpop {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  z-index: 5;
+  margin-top: 4px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+.histfoot {
+  display: flex;
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding: 2px 4px 0;
 }
 .answer ul {
   padding-left: 18px;
@@ -1032,11 +1214,6 @@ body.vscode-light {
 
 /* AI investigation */
 
-.ask .modes {
-  display: flex;
-  align-items: stretch;
-  margin-bottom: 6px;
-}
 .node.visited .box {
   stroke: var(--purple);
   stroke-width: 2.5px;
@@ -1047,10 +1224,7 @@ body.vscode-light {
   from { stroke-opacity: 1; }
   to { stroke-opacity: 0.45; }
 }
-.answer details.steps {
-  margin: 6px 0 10px;
-}
-.answer details.steps ol {
+#aiSteps {
   list-style: none;
   padding: 0;
   margin: 4px 0;
@@ -1092,10 +1266,10 @@ body.vscode-light {
 .stepi.live .sg {
   animation: visited-pulse 0.8s ease-in-out infinite alternate;
 }
-.answer details.evidence li {
+.aidrawer.evidence li {
   line-height: 1.45;
 }
-.answer details.evidence a.site {
+.aidrawer.evidence a.site {
   white-space: nowrap;
   word-break: normal;
 }
@@ -1143,11 +1317,6 @@ body.vscode-light {
 
 /* AI history */
 
-.history {
-  margin-top: 16px;
-  border-top: 1px solid var(--border);
-  padding-top: 6px;
-}
 ul.hist {
   list-style: none;
   padding: 0;
