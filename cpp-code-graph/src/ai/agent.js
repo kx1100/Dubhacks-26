@@ -123,8 +123,48 @@ Back the important claims with evidence items whose file and line come from tool
 
 const MODE_HINTS = {
   ask: '',
-  path: 'The developer wants the execution path. Start at the entry point (main, or the selected node), follow calls in the order they happen, and read the bodies to notice branches and error handling. Put the main path in `path`, in call order.'
+  path: `The developer wants the execution path. Start at the selected node if it is a function, otherwise at main.
+Follow calls in the order they happen: read the bodies to get the order right and to notice branches, early returns, loops and error handling.
+In finish, put the usual path in routes[0], in call order. When the code has an important branch (an error path, a retry, an early exit), add it as another route that starts with the step where it branches off, and give its condition.
+Mark each step's kind: call (default), branch (taken only under a condition), callback (reached through a function pointer or virtual dispatch), error (error handling), return (back to the caller).`
 };
+
+const STEP_KINDS = ['call', 'branch', 'callback', 'error', 'return'];
+const MAX_ROUTES = 4;
+const MAX_ROUTE_STEPS = 30;
+
+/** The tools for a mode: in path mode, finish takes routes with step kinds and conditions instead of a flat path. */
+function toolsFor(mode) {
+  if (mode !== 'path') return TOOLS;
+  const finish = TOOLS.find(t => t.name === 'finish');
+  const props = { ...finish.inputSchema.properties };
+  delete props.path;
+  props.routes = {
+    type: 'array',
+    description: 'routes[0] is the usual path from the entry point, in call order. Up to 3 more routes for important branches; each starts with the step where it branches off routes[0].',
+    items: {
+      type: 'object',
+      properties: {
+        label: { type: 'string', description: 'Short name, e.g. "main", "file not open", "retry".' },
+        steps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              node: nodeArg,
+              kind: { type: 'string', enum: STEP_KINDS },
+              condition: { type: 'string', description: 'For a branch or error step: the condition in the code, e.g. "if (!g_file)".' },
+              note: { type: 'string', description: 'What happens at this step, in a few words.' }
+            },
+            required: ['node']
+          }
+        }
+      },
+      required: ['steps']
+    }
+  };
+  return TOOLS.map(t => (t === finish ? { ...finish, inputSchema: { ...finish.inputSchema, properties: props } } : t));
+}
 
 /**
  * @param {{nodes:object[], edges:object[]}} graph
@@ -155,6 +195,12 @@ async function investigate(graph, question, opts) {
   const focus = opts.focusId && tools.nodes.get(opts.focusId);
   const mains = graph.nodes.filter(n => n.kind === 'function' && n.name === 'main');
   const files = graph.nodes.filter(n => n.kind === 'file').length;
+  const modeTools = toolsFor(opts.mode);
+  let callTree = '';
+  if (opts.mode === 'path') {
+    const entry = focus && (focus.kind === 'function' || focus.kind === 'method') ? focus : mains[0];
+    if (entry) callTree = 'Calls reachable from ' + tools.label(entry) + ' (up to 3 levels; read the bodies for the order):\n' + tools.reach(entry.id, { dir: 'out', maxDepth: 3, limit: 60 }).text;
+  }
   const intro = [
     SYSTEM,
     MODE_HINTS[opts.mode || 'ask'] || '',
@@ -162,6 +208,7 @@ async function investigate(graph, question, opts) {
     mains.length ? 'Entry point: ' + mains.map(n => tools.label(n)).join('; ') : 'No main() was found.',
     focus ? 'The developer has this node selected: ' + tools.label(focus) : '',
     'Symbols matching the question:\n' + first.text,
+    callTree,
     'Question: ' + question
   ]
     .filter(Boolean)
@@ -177,7 +224,7 @@ async function investigate(graph, question, opts) {
     if (token.isCancellationRequested) break;
     const mustFinish = round === maxSteps - 1 || used > budget;
     if (mustFinish && round > 0) messages[messages.length - 1].text = 'Stop investigating now and call finish with the best answer you have. Lower the confidence if needed.';
-    const reply = await llm.send(messages, { tools: mustFinish ? TOOLS.filter(t => t.name === 'finish') : TOOLS, forceTool: mustFinish ? 'finish' : null }, token);
+    const reply = await llm.send(messages, { tools: mustFinish ? modeTools.filter(t => t.name === 'finish') : modeTools, forceTool: mustFinish ? 'finish' : null }, token);
     const calls = reply.calls || [];
     lastText = reply.text || '';
     if (!calls.length) break; // answered in plain text instead of calling finish
@@ -288,16 +335,9 @@ function validate(tools, raw) {
     return '`' + x + '`';
   });
 
-  const path = [];
-  for (const x of list(raw.path)) {
-    const id = toId(x);
-    if (id && path[path.length - 1] !== id) path.push(id);
-  }
-  const hops = [];
-  for (let i = 1; i < path.length; i++) {
-    const e = (tools.out.get(path[i - 1]) || []).find(x => x.kind === 'calls' && x.t === path[i]);
-    hops.push({ s: path[i - 1], t: path[i], inferred: !e, uncertain: !!(e && e.uncertain), site: e && e.sites ? e.sites[0] : null });
-  }
+  const routes = buildRoutes(tools, raw, toId, list);
+  const path = routes.length ? routes[0].steps.map(s => s.id) : [];
+  const hops = routes.length ? routes[0].steps.slice(1).map((s, i) => ({ s: path[i], t: s.id, inferred: s.inferred, uncertain: s.uncertain, dispatch: s.dispatch, returns: s.returns, site: s.site })) : [];
 
   const evidence = [];
   for (const ev of Array.isArray(raw.evidence) ? raw.evidence : []) {
@@ -321,7 +361,60 @@ function validate(tools, raw) {
 
   const highlight = [...new Set([...list(raw.highlight).map(toId).filter(Boolean), ...referenced, ...path, ...evidence.map(e => e.nodeId).filter(Boolean)])];
   const confidence = ['high', 'medium', 'low'].includes(raw.confidence) ? raw.confidence : 'low';
-  return { answer, highlight, path, hops, evidence, confidence };
+  const routeIds = routes.flatMap(r => r.steps.map(s => s.id));
+  return { answer, highlight: [...new Set([...highlight, ...routeIds])], path, hops, routes, evidence, confidence };
 }
 
-module.exports = { investigate, validate, TOOLS };
+/**
+ * Routes from raw.routes (path mode) or raw.path. Each step is
+ * {id, kind, condition?, note?} plus, after the first, how it is reached:
+ * a call edge (site, uncertain), virtual dispatch (calls a base method this
+ * one overrides), a return to the caller, or inferred (no edge in the graph).
+ * Alternatives that start at a step of the main route get its prefix, and
+ * divergeAt is the index of the step where they branch off.
+ */
+function buildRoutes(tools, raw, toId, list) {
+  const clip = (v, n) => (v == null ? undefined : String(v).trim().slice(0, n) || undefined);
+  const rawRoutes = Array.isArray(raw.routes) && raw.routes.length ? raw.routes : raw.path ? [{ label: 'main', steps: list(raw.path).map(node => ({ node })) }] : [];
+  const routes = [];
+  for (const r of rawRoutes.slice(0, MAX_ROUTES)) {
+    if (!r || typeof r !== 'object') continue;
+    const steps = [];
+    for (const st of (Array.isArray(r.steps) ? r.steps : []).slice(0, MAX_ROUTE_STEPS)) {
+      const id = toId(st && typeof st === 'object' ? st.node : st);
+      if (!id || (steps.length && steps[steps.length - 1].id === id)) continue;
+      steps.push({ id, kind: STEP_KINDS.includes(st.kind) ? st.kind : 'call', condition: clip(st.condition, 120), note: clip(st.note, 160) });
+    }
+    if (steps.length) routes.push({ label: clip(r.label, 40) || (routes.length ? 'alternative ' + routes.length : 'main'), steps, divergeAt: 0 });
+  }
+  if (!routes.length) return routes;
+  const main = routes[0];
+  for (const alt of routes.slice(1)) {
+    const at = main.steps.findIndex(s => s.id === alt.steps[0].id);
+    if (at < 0) continue;
+    // The branching step keeps the alternative's kind and condition.
+    alt.steps = [...main.steps.slice(0, at).map(s => ({ ...s })), alt.steps[0], ...alt.steps.slice(1)];
+    alt.divergeAt = at;
+  }
+  for (const r of routes) {
+    for (let i = 1; i < r.steps.length; i++) Object.assign(r.steps[i], hopInfo(tools, r.steps[i - 1].id, r.steps[i].id));
+  }
+  return routes;
+}
+
+function hopInfo(tools, from, to) {
+  const calls = (tools.out.get(from) || []).filter(e => e.kind === 'calls');
+  const site = e => (e.sites && e.sites[0]) || null;
+  let e = calls.find(x => x.t === to);
+  if (e) return { inferred: false, uncertain: !!e.uncertain, site: site(e) };
+  // Virtual dispatch: `from` calls a base method that `to` overrides.
+  const bases = new Set((tools.out.get(to) || []).filter(x => x.kind === 'overrides').map(x => x.t));
+  e = calls.find(x => bases.has(x.t));
+  if (e) return { inferred: false, dispatch: true, uncertain: true, site: site(e) };
+  // Returning to the caller.
+  e = (tools.out.get(to) || []).find(x => x.kind === 'calls' && x.t === from);
+  if (e) return { inferred: false, returns: true, site: null };
+  return { inferred: true, site: null };
+}
+
+module.exports = { investigate, validate, toolsFor, TOOLS };

@@ -305,6 +305,7 @@ class GraphPanel {
       highlight: result.highlight || [],
       path: result.path || [],
       hops: result.hops,
+      routes: result.routes,
       evidence: result.evidence,
       confidence: result.confidence,
       model: result.model,

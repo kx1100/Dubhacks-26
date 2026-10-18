@@ -1229,3 +1229,108 @@ ul.hist {
 .pill {
   white-space: nowrap;
 }
+
+/* Execution routes */
+
+.exec-path.inferred {
+  stroke-dasharray: 7 6;
+}
+.exec-path.uncertain {
+  stroke-dasharray: 2 5;
+  stroke-linecap: round;
+}
+.exec-path.returns {
+  stroke-dasharray: 1 6;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+.exec-path.shared,
+.step.shared {
+  opacity: 0.45;
+}
+.step.k-error circle { fill: var(--red); }
+.step.k-branch circle { fill: var(--orange); }
+.step.k-callback circle { fill: var(--purple); }
+.step.k-return circle { fill: var(--muted); }
+.cond rect {
+  fill: var(--node-bg);
+  stroke: var(--orange);
+  stroke-width: 1.2px;
+}
+.cond.k-error rect {
+  stroke: var(--red);
+}
+.cond text {
+  fill: var(--fg);
+  font-size: 11px;
+  font-family: var(--mono);
+  text-anchor: middle;
+  pointer-events: none;
+}
+.answer .routesw {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 4px 0 6px;
+}
+ol.route {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0;
+}
+.rs {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.rs.shared {
+  opacity: 0.6;
+}
+.rs .rn {
+  color: var(--muted);
+  min-width: 16px;
+  text-align: right;
+  font-size: 11px;
+}
+.rs .rk {
+  min-width: 14px;
+  text-align: center;
+  color: var(--yellow);
+}
+.rs.k-error .rk { color: var(--red); }
+.rs.k-branch .rk { color: var(--orange); }
+.rs.k-callback .rk { color: var(--purple); }
+.rs.k-return .rk { color: var(--muted); }
+.rs .rb {
+  flex: 1;
+  min-width: 0;
+}
+.rs .rc {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--orange);
+}
+.rs.k-error .rc {
+  color: var(--red);
+}
+.rs .rnote {
+  font-size: 11px;
+}
+.tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.tag.inferred {
+  border-style: dashed;
+  color: var(--orange);
+}
+.tag.uncertain {
+  border-style: dotted;
+}

@@ -279,6 +279,69 @@ async function main() {
     await evaluate("document.getElementById('historyClear').click(); true");
     assert(await evaluate("waitFor(() => cg.S.history.length === 0 && document.getElementById('history').innerHTML === '')"), 'history cleared');
 
+    // 15. Trace path: routes with step kinds, conditions and hop styles, a route switcher, and "Trace path with AI".
+    await open('?ai');
+    await evaluate("cg.reveal(nodeByName('render').id, { center: false }); window.__sent.length = 0; document.querySelector('[data-act=\"tracePath\"]').click(); true");
+    const traceAsk = JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))"));
+    assert.deepStrictEqual(pick(traceAsk, ['question', 'mode', 'focus']), { question: 'What happens when geo::Canvas::render runs?', mode: 'path', focus: await evaluate("nodeByName('render').id") });
+    assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
+    assert(await evaluate('waitFor(() => !cg.S.ai.busy, 3000)'), 'trace answered');
+    await evaluate("document.getElementById('hlReveal') && document.getElementById('hlReveal').click(); true");
+    const route = () => evaluate(`JSON.stringify({
+      tabs: [...document.querySelectorAll('.routesw [data-route]')].map(b => b.textContent + (b.classList.contains('active') ? '*' : '')),
+      kinds: [...document.querySelectorAll('ol.route .rs')].map(li => [...li.classList].find(c => c.startsWith('k-')).slice(2)),
+      shared: [...document.querySelectorAll('ol.route .rs')].map(li => li.classList.contains('shared')),
+      conds: [...document.querySelectorAll('ol.route .rc')].map(e => e.textContent),
+      tags: [...document.querySelectorAll('ol.route .tag')].map(e => e.textContent),
+      path: cg.S.highlight.path.map(id => cg.S.nodes.get(id).name),
+      label: cg.S.highlight.label,
+      segs: [...document.querySelectorAll('#layerPath .exec-path')].map(p => [...p.classList].filter(c => c !== 'exec-path').join(' ')),
+      steps: [...document.querySelectorAll('#layerPath .step')].map(g => [...g.classList].filter(c => c !== 'step').join(' ')),
+      condLabels: [...document.querySelectorAll('#layerPath .cond text')].map(t => t.textContent)
+    })`).then(JSON.parse);
+    let r = await route();
+    assert.deepStrictEqual(r.tabs, ['main*', 'circle', 'shutdown']);
+    assert.deepStrictEqual(r.path, ['main', 'render', 'draw', 'plot']);
+    assert.deepStrictEqual(r.kinds, ['call', 'call', 'call', 'call']);
+    assert.deepStrictEqual(r.tags, ['by name']);
+    assert.strictEqual(r.label, 'AI: What happens when geo::Canvas::render runs? (main)');
+    assert.deepStrictEqual(r.segs, ['', 'uncertain', ''], 'segments: call, by-name call, call');
+    // An alternative: shares main's first step, branches with a condition, reaches the override.
+    await evaluate("document.querySelector('[data-route=\"1\"]').click(); true");
+    r = await route();
+    assert.deepStrictEqual(r.tabs, ['main', 'circle*', 'shutdown']);
+    assert.deepStrictEqual(r.path, ['main', 'render', 'draw', 'plot']);
+    assert.strictEqual(await evaluate("cg.S.nodes.get(cg.S.highlight.path[2]).qname"), 'geo::Circle::draw');
+    assert.deepStrictEqual(r.kinds, ['call', 'branch', 'callback', 'call']);
+    assert.deepStrictEqual(r.shared, [true, false, false, false]);
+    assert.deepStrictEqual(r.conds, ['shape is a Circle']);
+    assert.deepStrictEqual(r.condLabels, ['shape is a Circle']);
+    assert.match(r.label, /\(circle\)$/);
+    assert(r.segs[0].includes('shared') && r.steps[0].includes('shared'), 'the shared prefix is faded: ' + JSON.stringify(r));
+    assert(r.steps.some(c => c.includes('k-branch')) && r.steps.some(c => c.includes('k-callback')));
+    // An error route with an inferred hop.
+    await evaluate("document.querySelector('[data-route=\"2\"]').click(); true");
+    r = await route();
+    assert.deepStrictEqual(r.kinds, ['call', 'error', 'call']);
+    assert.deepStrictEqual(r.tags, ['inferred']);
+    assert.deepStrictEqual(r.conds, ['if (!g_file)']);
+    assert.deepStrictEqual(r.segs, ['', 'inferred']);
+    assert(r.steps.some(c => c.includes('k-error')));
+    // The highlight switch keeps the chosen route.
+    await evaluate("document.getElementById('aiShow').click(); document.getElementById('aiShow').click(); true");
+    assert.match(await evaluate('cg.S.highlight.label'), /\(shutdown\)$/);
+    // Restoring from history keeps the routes.
+    assert(await evaluate('waitFor(() => cg.S.history.length === 1)'));
+    await evaluate("cg.S.highlight = null; document.querySelector('#history .histi').click(); true");
+    r = await route();
+    assert.deepStrictEqual(r.tabs, ['main*', 'circle', 'shutdown']);
+    assert.deepStrictEqual(r.path, ['main', 'render', 'draw', 'plot']);
+    // An Ask answer with a plain path still lists it as a route.
+    await evaluate("document.querySelector('[data-ai-mode=\"ask\"]').click(); document.getElementById('question').value = 'Where does drawing start?'; document.getElementById('askBtn').click(); true");
+    assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'));
+    r = await route();
+    assert.deepStrictEqual([r.tabs, r.path, r.tags], [[], ['main', 'render', 'draw', 'plot'], ['by name']]);
+
     console.log('ui: ok');
     ws.close();
   } finally {

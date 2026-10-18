@@ -61,6 +61,15 @@
     ask: { label: 'Ask', desc: 'A direct answer that looks up only what it needs', placeholder: 'Ask about the code, e.g. “How are shapes drawn?”' },
     path: { label: 'Trace path', desc: 'Reconstruct the execution path in call order, from main or the selected node', placeholder: 'What to trace, e.g. “What happens when the program starts?”' }
   };
+  // Kinds of execution-path steps (see agent.js), most notable first.
+  const ROUTE_KINDS = {
+    error: { glyph: '⚠', label: 'error handling' },
+    branch: { glyph: '⑂', label: 'branch: only under a condition' },
+    callback: { glyph: '↺', label: 'callback or virtual dispatch' },
+    return: { glyph: '↩', label: 'returns to the caller' },
+    call: { glyph: '→', label: 'call' }
+  };
+  const ROUTE_KIND_ORDER = Object.keys(ROUTE_KINDS);
   const STEP_GLYPHS = { search_symbols: '⌕', get_node: 'ⓘ', neighbors: '⇄', call_paths: '⤳', reach: '⇶', read_code: '‹›', grep: '≡' };
 
   // View presets: each answers one question and sets arrows, filters and depth.
@@ -1365,22 +1374,55 @@
       return;
     }
     const { abs, vis } = S.layout;
-    const reps = [];
-    for (const id of S.highlight.path) {
+    const route = S.highlight.route;
+    // Consecutive steps whose nodes are drawn as the same box form one group.
+    const groups = [];
+    S.highlight.path.forEach((id, k) => {
       const r = vis.repOf(id);
-      if (r && reps[reps.length - 1] !== r) reps.push(r);
-    }
-    let s = '';
-    for (let i = 0; i + 1 < reps.length; i++) {
-      const g = edgeGeometry({ s: reps[i], t: reps[i + 1] }, abs, 0.35);
-      if (g) s += `<path class="exec-path" d="${g.d}" marker-end="url(#arrow-path)"/>`;
-    }
-    reps.forEach((r, i) => {
-      const b = abs.get(r);
-      if (!b) return;
-      s += `<g class="step" transform="translate(${b.x - 8},${b.y - 8})"><circle r="10" cx="0" cy="0"/><text x="0" y="4">${i + 1}</text></g>`;
+      if (!r) return;
+      const step = (route && route.steps[k]) || { id, kind: 'call' };
+      const last = groups[groups.length - 1];
+      if (last && last.rep === r) {
+        last.to = k;
+        last.steps.push(step);
+      } else groups.push({ rep: r, from: k, to: k, steps: [step] });
     });
-    layer.innerHTML = s;
+    const divergeAt = route ? route.divergeAt || 0 : 0;
+    let s = '';
+    let labels = '';
+    for (let i = 1; i < groups.length; i++) {
+      const g = edgeGeometry({ s: groups[i - 1].rep, t: groups[i].rep }, abs, 0.35);
+      if (!g) continue;
+      const hop = groups[i].steps[0];
+      const cls = ['exec-path'];
+      if (hop.inferred) cls.push('inferred');
+      else if (hop.returns) cls.push('returns');
+      else if (hop.uncertain || hop.dispatch) cls.push('uncertain');
+      if (groups[i].from <= divergeAt && divergeAt > 0) cls.push('shared');
+      s += `<path class="${cls.join(' ')}" d="${g.d}" marker-end="url(#arrow-path)"><title>${esc(hopTitle(hop))}</title></path>`;
+      if (hop.condition) {
+        const text = hop.condition.length > 40 ? hop.condition.slice(0, 39) + '…' : hop.condition;
+        const w = text.length * 6.4 + 12;
+        labels += `<g class="cond k-${hop.kind}" transform="translate(${(g.mx - w / 2).toFixed(1)},${(g.my - 9).toFixed(1)})"><title>${esc(hop.condition)}</title><rect width="${w.toFixed(1)}" height="18" rx="9"/><text x="${(w / 2).toFixed(1)}" y="13">${esc(text)}</text></g>`;
+      }
+    }
+    for (const grp of groups) {
+      const b = abs.get(grp.rep);
+      if (!b) continue;
+      const kind = ROUTE_KIND_ORDER.find(k => grp.steps.some(st => st.kind === k)) || 'call';
+      const num = grp.from === grp.to ? String(grp.from + 1) : grp.from + 1 + '–' + (grp.to + 1);
+      const r = num.length > 2 ? 13 : 10;
+      s += `<g class="step k-${kind}${grp.to < divergeAt ? ' shared' : ''}" transform="translate(${b.x - 8},${b.y - 8})"><circle r="${r}" cx="0" cy="0"/><text x="0" y="4">${num}</text></g>`;
+    }
+    layer.innerHTML = s + labels;
+  }
+
+  function hopTitle(hop) {
+    if (hop.inferred) return 'Inferred: there is no call between these steps in the graph';
+    if (hop.returns) return 'Returns to the caller';
+    if (hop.dispatch) return 'Virtual dispatch: the call goes to a base method this one overrides';
+    if (hop.uncertain) return 'Call matched by name only';
+    return 'Call';
   }
 
   // ---------------------------------------------------------------------------
@@ -1889,6 +1931,7 @@
         <button data-act="center">Center</button>
         <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
         <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
+        ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
         ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
       </div>
       ${members}
@@ -1909,7 +1952,13 @@
         else if (act === 'center') centerOn(nearestInTree(n.id) || n.id, true);
         else if (act === 'focusArea') focusArea(n.id);
         else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
-        else if (act === 'explain') {
+        else if (act === 'tracePath') {
+          switchTab('ai');
+          S.aiMode = 'path';
+          persist();
+          renderModes();
+          ask(`What happens when ${n.qname || n.name} runs?`, 'path', n.id);
+        } else if (act === 'explain') {
           switchTab('ai');
           ask(`Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask');
         }
@@ -2041,11 +2090,11 @@
     $('suggestions').querySelectorAll('.sugg').forEach(b => (b.onclick = () => ask(b.textContent)));
   }
 
-  function ask(q, mode) {
+  function ask(q, mode, focusId) {
     q = (q || $('question').value).trim();
     if (!q) return;
     $('question').value = q;
-    const focus = $('useSelection').checked ? S.selected : null;
+    const focus = focusId || ($('useSelection').checked ? S.selected : null);
     mode = AI_MODES[mode] ? mode : S.aiMode;
     S.ai = { busy: true, question: q, answer: '', model: null, steps: [], mode };
     renderAnswer();
@@ -2086,6 +2135,46 @@
       })
       .join('');
     return `<details class="steps" id="aiSteps"${open ? ' open' : ''}><summary>${a.busy ? 'Investigating' : 'Investigation'} <span class="muted">${a.steps.length} step${a.steps.length === 1 ? '' : 's'}</span></summary><ol>${rows}</ol></details>`;
+  }
+
+  /** The answer's routes; answers without routes (single prompt, older history) get one from their path. */
+  function aiRoutes(a) {
+    if (a.routes && a.routes.length) return a.routes;
+    if (!a.path || a.path.length < 2) return [];
+    const hops = a.hops || [];
+    return [{ label: 'main', divergeAt: 0, steps: a.path.map((id, i) => Object.assign({ id, kind: 'call' }, i ? hops[i - 1] || {} : {})) }];
+  }
+
+  function currentRoute(a) {
+    const routes = aiRoutes(a);
+    return routes[Math.min(a.routeIdx || 0, routes.length - 1)] || null;
+  }
+
+  function renderRoutes(a) {
+    const routes = aiRoutes(a);
+    const route = currentRoute(a);
+    if (!route || route.steps.length < 2) return '';
+    const idx = routes.indexOf(route);
+    const switcher =
+      routes.length > 1
+        ? `<div class="seg routesw" role="group" aria-label="Route">${routes
+            .map((r, i) => `<button data-route="${i}" class="${i === idx ? 'active' : ''}" aria-pressed="${i === idx}" title="${esc(r.label)}: ${r.steps.length} steps">${esc(r.label)}</button>`)
+            .join('')}</div>`
+        : '';
+    const items = route.steps
+      .map((st, i) => {
+        const k = ROUTE_KINDS[st.kind] || ROUTE_KINDS.call;
+        const tags = [];
+        if (i && st.inferred) tags.push(`<span class="tag inferred" title="${esc(hopTitle(st))}">inferred</span>`);
+        else if (i && st.dispatch) tags.push(`<span class="tag uncertain" title="${esc(hopTitle(st))}">virtual</span>`);
+        else if (i && st.uncertain) tags.push(`<span class="tag uncertain" title="${esc(hopTitle(st))}">by name</span>`);
+        if (i && st.returns) tags.push('<span class="tag">returns</span>');
+        const site = i && st.site ? ` <a class="site" data-open-file="${esc(st.site.file)}" data-open-line="${st.site.line}" data-side="target" title="Call site ${esc(st.site.file + ':' + st.site.line)}">↗</a>` : '';
+        const shared = i < (route.divergeAt || 0) ? ' shared' : '';
+        return `<li class="rs k-${st.kind}${shared}"><span class="rn">${i + 1}</span><span class="rk" title="${esc(k.label)}">${k.glyph}</span><div class="rb">${nodeChip(st.id)}${tags.join('')}${site}${st.condition ? `<div class="rc">${esc(st.condition)}</div>` : ''}${st.note ? `<div class="muted rnote">${esc(st.note)}</div>` : ''}</div></li>`;
+      })
+      .join('');
+    return `<details class="routebox" open><summary>Route <span class="muted">${route.steps.length} steps</span></summary>${switcher}<ol class="route">${items}</ol></details>`;
   }
 
   function renderEvidence(a) {
@@ -2146,6 +2235,7 @@
     el.innerHTML = `<div class="q">${modeLabel}${esc(a.question)}${when}</div>
       ${hasSteps ? renderSteps(a) : ''}
       <div class="a">${a.answer ? mdLite(a.answer) : a.busy ? `<span class="muted">${hasSteps ? 'Investigating…' : 'Thinking…'}</span>` : ''}</div>
+      ${!a.busy ? renderRoutes(a) : ''}
       ${!a.busy ? renderEvidence(a) : ''}
       ${a.busy ? '<button id="cancelAsk">Stop</button>' : ''}
       ${!a.busy && ((a.highlight && a.highlight.length) || conf) ? `<div class="askrow">${showBtn}<span class="meta">${conf}${a.model ? `<span class="muted">via ${esc(a.model)}</span>` : ''}</span></div>` : ''}
@@ -2163,6 +2253,13 @@
       syncAiToggle();
     }
     renderHistory();
+    el.querySelectorAll('[data-route]').forEach(b => {
+      b.onclick = () => {
+        a.routeIdx = +b.dataset.route;
+        renderAnswer();
+        applyAiHighlight(false);
+      };
+    });
     const steps = $('aiSteps');
     if (steps) {
       steps.ontoggle = () => (a.stepsOpen = steps.open);
@@ -2228,7 +2325,7 @@
   function openHistory(e) {
     S.ai = {
       busy: false, question: e.question, mode: e.mode, steps: (e.steps || []).map((s, i) => ({ ...s, i })),
-      answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, evidence: e.evidence, confidence: e.confidence,
+      answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, routes: e.routes, routeIdx: 0, evidence: e.evidence, confidence: e.confidence,
       model: e.model, entryId: e.id, time: e.time, fromHistory: true
     };
     S.visited = null;
@@ -2257,9 +2354,13 @@
   function applyAiHighlight(revealToo) {
     const a = S.ai;
     if (!a.highlight || !a.highlight.length) return;
+    const route = currentRoute(a);
+    // Steps whose node no longer exists are dropped, keeping each step's kind and hop with its node.
+    const steps = route ? route.steps.filter(st => S.nodes.has(st.id)) : (a.path || []).filter(id => S.nodes.has(id)).map(id => ({ id, kind: 'call' }));
     const ids = new Set(a.highlight.filter(id => S.nodes.has(id)));
-    for (const id of a.path || []) if (S.nodes.has(id)) ids.add(id);
-    S.highlight = { ids, path: (a.path || []).filter(id => S.nodes.has(id)), label: 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question), source: 'ai', answer: a };
+    for (const st of steps) ids.add(st.id);
+    const label = 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question) + (route && aiRoutes(a).length > 1 ? ` (${route.label})` : '');
+    S.highlight = { ids, path: steps.map(st => st.id), route: { steps, divergeAt: route ? route.divergeAt || 0 : 0 }, label, source: 'ai', answer: a };
     if (revealToo) revealAll(ids);
     else render();
   }
@@ -2640,7 +2741,7 @@
       case 'aiResult':
         S.ai = {
           busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], stepsOpen: S.ai.stepsOpen,
-          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, evidence: m.evidence, confidence: m.confidence, model: m.model,
+          answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, routes: m.routes, routeIdx: 0, evidence: m.evidence, confidence: m.confidence, model: m.model,
           entryId: m.entryId, time: m.time
         };
         S.visited = null;

@@ -58,6 +58,29 @@
     const draw = by('qname', 'geo::Shape::draw');
     const plot = by('qname', 'geo::Canvas::plot');
     const logMessage = by('name', 'log_message');
+    const circleDraw = by('qname', 'geo::Circle::draw');
+    const logClose = by('name', 'log_close');
+    const site = (file, line) => ({ file, line });
+    // Trace path answers come with routes: the usual path and two alternatives.
+    const routes = m.mode === 'path' ? [
+      { label: 'main', divergeAt: 0, steps: [
+        { id: main, kind: 'call' },
+        { id: render, kind: 'call', note: 'draws every shape', inferred: false, site: site('src/main.cpp', 15) },
+        { id: draw, kind: 'call', inferred: false, uncertain: true, site: site('src/canvas.cpp', 18) },
+        { id: plot, kind: 'call', inferred: false, site: site('src/shape.cpp', 10) }
+      ] },
+      { label: 'circle', divergeAt: 1, steps: [
+        { id: main, kind: 'call' },
+        { id: render, kind: 'branch', condition: 'shape is a Circle', inferred: false, site: site('src/main.cpp', 15) },
+        { id: circleDraw, kind: 'callback', inferred: false, uncertain: true, site: site('src/canvas.cpp', 18) },
+        { id: plot, kind: 'call', inferred: false, site: site('src/shape.cpp', 24) }
+      ] },
+      { label: 'shutdown', divergeAt: 0, steps: [
+        { id: main, kind: 'call' },
+        { id: logClose, kind: 'error', condition: 'if (!g_file)', inferred: false, site: site('src/main.cpp', 19) },
+        { id: plot, kind: 'call', inferred: true }
+      ] }
+    ] : undefined;
     const steps = [
       { tool: 'search_symbols', args: { query: m.question }, summary: 'Searched the question → 3 symbols', nodeIds: [render, main, plot] },
       { tool: 'neighbors', args: { direction: 'out' }, summary: 'Outgoing calls of geo::Canvas::render (4)', nodeIds: [render, logMessage, draw], note: 'Checking what render calls.' },
@@ -79,7 +102,8 @@
         { nodeId: main, file: 'src/main.cpp', line: 15, claim: 'main hands the shapes to render' }
       ],
       confidence: 'high',
-      model: 'Harness'
+      model: 'Harness',
+      routes
     };
     setTimeout(() => {
       window.postMessage({ type: 'aiResult', ...result, steps: steps.length, entryId, time }, '*');

@@ -3,7 +3,8 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const { buildGraph } = require('../src/graph/builder');
-const { investigate, TOOLS } = require('../src/ai/agent');
+const { investigate, validate, toolsFor, TOOLS } = require('../src/ai/agent');
+const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k]]));
 const { GraphTools } = require('../src/ai/graphTools');
 
 const root = path.join(__dirname, '..', 'sample');
@@ -170,6 +171,65 @@ const call = (name, input) => ({ name, input });
   res = await investigate(graph, 'q', { llm, readSource, token });
   assert.strictEqual(llm.seen.length, 1);
   assert.strictEqual(res.answer, '_Cancelled._');
+
+  // 7. Path mode: finish takes routes; the intro shows the call tree from the entry point.
+  const pathFinish = toolsFor('path').find(t => t.name === 'finish').inputSchema.properties;
+  assert.ok(pathFinish.routes && !pathFinish.path);
+  assert.ok(toolsFor('ask').find(t => t.name === 'finish').inputSchema.properties.path);
+  llm = scripted([
+    {
+      calls: [
+        call('finish', {
+          answer: 'Shapes are drawn by render.',
+          routes: [
+            { label: 'main', steps: [{ node: ref('main') }, { node: ref('render'), note: 'draws every shape' }, { node: 'geo::Shape::draw' }, { node: ref('plot') }] },
+            { label: 'circle', steps: [{ node: ref('render'), kind: 'branch', condition: 'if the shape is a Circle' }, { node: 'geo::Circle::draw', kind: 'callback' }, { node: ref('plot') }] },
+            { label: 'cleanup', steps: [{ node: ref('main') }, { node: ref('log_close') }, { node: ref('main'), kind: 'return' }, { node: ref('plot') }] },
+            { label: 'junk', steps: [{ node: 'NoSuchThing' }] }
+          ],
+          confidence: 'high'
+        })
+      ]
+    }
+  ]);
+  res = await investigate(graph, 'How are shapes drawn?', { llm, readSource, mode: 'path', focusId: idOf('render') });
+  const pathIntro = llm.seen[0].messages[0].text;
+  assert.match(pathIntro, /Calls reachable from N\d+ method geo::Canvas::render @src\/canvas.cpp:15 \(up to 3 levels/);
+  assert.match(pathIntro, /d2 N\d+ method geo::Canvas::plot/);
+  assert.match(pathIntro, /routes\[0\]/);
+  assert.ok(llm.seen[0].opts.tools.find(t => t.name === 'finish').inputSchema.properties.routes);
+  assert.deepStrictEqual(res.routes.map(r => r.label), ['main', 'circle', 'cleanup']);
+  const [mainRoute, circle, cleanup] = res.routes;
+  assert.deepStrictEqual(res.path, mainRoute.steps.map(s => s.id));
+  assert.strictEqual(mainRoute.steps[1].note, 'draws every shape');
+  assert.deepStrictEqual(mainRoute.steps.map(s => s.kind), ['call', 'call', 'call', 'call']);
+  // The alternative gets the shared prefix, and keeps its own kind and condition where it branches.
+  assert.deepStrictEqual(circle.steps.map(s => s.id), [idOf('main'), idOf('render'), idOf('geo::Circle::draw'), idOf('plot')]);
+  assert.strictEqual(circle.divergeAt, 1);
+  assert.deepStrictEqual([circle.steps[1].kind, circle.steps[1].condition], ['branch', 'if the shape is a Circle']);
+  assert.strictEqual(circle.steps[2].kind, 'callback');
+  // Hops: a real (uncertain) call, a return to the caller, and an inferred jump.
+  assert.deepStrictEqual([circle.steps[2].inferred, circle.steps[2].uncertain], [false, true]);
+  assert.deepStrictEqual(circle.steps[2].site, { file: 'src/canvas.cpp', line: 18 });
+  assert.strictEqual(cleanup.divergeAt, 0);
+  assert.deepStrictEqual([cleanup.steps[2].returns, cleanup.steps[2].inferred, cleanup.steps[3].inferred], [true, false, true]);
+  assert.ok(res.highlight.includes(idOf('geo::Circle::draw')) && res.highlight.includes(idOf('log_close')), 'alternative routes are highlighted too');
+
+  // 8. Virtual dispatch: a call to the base method reaches an override.
+  const vg = {
+    nodes: [
+      { id: 'fn:run', kind: 'function', name: 'run', qname: 'run', file: 'a.cpp', line: 1 },
+      { id: 'fn:Base::go', kind: 'method', name: 'go', qname: 'Base::go', file: 'a.cpp', line: 5 },
+      { id: 'fn:Impl::go', kind: 'method', name: 'go', qname: 'Impl::go', file: 'a.cpp', line: 9 }
+    ],
+    edges: [
+      { s: 'fn:run', t: 'fn:Base::go', kind: 'calls', n: 1, sites: [{ file: 'a.cpp', line: 2 }] },
+      { s: 'fn:Impl::go', t: 'fn:Base::go', kind: 'overrides', n: 1 }
+    ]
+  };
+  const v = validate(new GraphTools(vg), { answer: '', path: ['run', 'Impl::go'] });
+  assert.deepStrictEqual(pick(v.routes[0].steps[1], ['inferred', 'dispatch', 'uncertain', 'site']), { inferred: false, dispatch: true, uncertain: true, site: { file: 'a.cpp', line: 2 } });
+  assert.deepStrictEqual(pick(v.hops[0], ['dispatch', 'inferred']), { dispatch: true, inferred: false });
 
   console.log('agent: ok');
 })().catch(err => {
