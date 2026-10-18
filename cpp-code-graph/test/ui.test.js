@@ -173,12 +173,12 @@ async function main() {
     //     its nodes are marked, and the answer's strip opens steps, evidence and confidence.
     await open('?ai');
     await evaluate("document.querySelector('.tabs [data-tab=\"ai\"]').click(); true");
-    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'false');
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-checked')"), 'false');
     assert.strictEqual(await evaluate("document.getElementById('suggestions').classList.contains('hidden')"), false, 'suggestions show while the box is empty');
     assert.strictEqual(await evaluate("!!document.getElementById('historyBtn')"), false, 'no history button without history');
     await evaluate("document.getElementById('traceChip').click(); true");
     assert.strictEqual(await evaluate('cg.S.aiMode'), 'path');
-    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-pressed')"), 'true');
+    assert.strictEqual(await evaluate("document.getElementById('traceChip').getAttribute('aria-checked')"), 'true');
     assert.strictEqual(await evaluate("document.getElementById('askBtn').textContent"), 'Trace');
     assert.match(await evaluate("document.getElementById('question').placeholder"), /What to trace/);
     await evaluate("window.__sent.length = 0; document.getElementById('question').value = 'How are shapes drawn?'; document.getElementById('askBtn').click(); true");
@@ -194,12 +194,12 @@ async function main() {
     assert(live.visited > 0 && live.stop && !live.ask, 'live step marks nodes, Stop replaces Ask: ' + JSON.stringify(live));
     assert.match(live.text, /Searched the question → 3 symbols…\s*1 step/);
     // The steps so far open from the live line.
-    await evaluate("document.querySelector('#aiLive [data-open=\"steps\"]').click(); true");
+    await evaluate("document.querySelector('#aiLive [data-open=\"how\"]').click(); true");
     assert(await evaluate("waitFor(() => document.querySelectorAll('#aiSteps .stepi.live').length === 1)"), 'live step listed');
     assert(await evaluate("waitFor(() => !cg.S.ai.busy, 3000)"), 'answer arrives');
     const strip = () => evaluate("JSON.stringify([...document.querySelectorAll('#answer .metastrip [data-open]')].map(b => b.dataset.open + ':' + b.textContent.replace(/[▾▴]/g, '').trim() + (b.getAttribute('aria-expanded') === 'true' ? '*' : '')))").then(JSON.parse);
     const openDrawer = key => evaluate(`(() => { const b = document.querySelector('#answer .metastrip [data-open="${key}"]'); if (b.getAttribute('aria-expanded') !== 'true') b.click(); return true; })()`);
-    assert.deepStrictEqual(await strip(), ['route:Route 4', 'steps:3 steps*', 'evidence:2 sources', 'conf:high'], 'steps stay open when opened while busy');
+    assert.deepStrictEqual(await strip(), ['route:Route 4', 'how:How it was found*'], 'steps stay open when opened while busy');
     const done = JSON.parse(await evaluate(`JSON.stringify({
       steps: [...document.querySelectorAll('#aiSteps .stepi .st')].map(e => e.textContent),
       live: document.querySelectorAll('#aiSteps .stepi.live').length,
@@ -215,15 +215,17 @@ async function main() {
     assert.strictEqual(done.live, 0);
     assert.strictEqual(done.visited, 0, 'visited marks clear when the answer arrives');
     assert.strictEqual(done.chips, 4);
-    assert.strictEqual(done.conf, 'high: read the code of 2 of the 2 functions it cites; 2 cited source lines');
+    assert.strictEqual(done.conf, 'high confidence: read the code of 2 of the 2 functions it cites; 2 cited source lines · 2 sources · 3 steps');
     assert.strictEqual(done.trace, true, 'a traced question is marked');
     assert.strictEqual(done.path, 4, 'answer path is numbered in the graph');
     assert.strictEqual(done.suggestions, true, 'suggestions hide once something was asked');
     assert.strictEqual(done.cancel, false);
-    await openDrawer('evidence');
+    // Confidence, sources and steps share one drawer.
+    await openDrawer('how');
     assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#answer .evidence a.site')].map(a => a.textContent))")), ['canvas.cpp:18', 'main.cpp:15']);
-    assert.deepStrictEqual(await strip(), ['route:Route 4', 'steps:3 steps', 'evidence:2 sources*', 'conf:high'], 'one drawer at a time');
-    await openDrawer('conf');
+    await openDrawer('route');
+    assert.deepStrictEqual(await strip(), ['route:Route 4*', 'how:How it was found'], 'one drawer at a time');
+    await openDrawer('how');
     assert.match(await evaluate("document.querySelector('#answer .confbox').textContent"), /High confidence\. read the code of 2/);
     // The question box is cleared once the answer arrives.
     assert.strictEqual(await evaluate("document.getElementById('question').value"), '');
@@ -244,7 +246,7 @@ async function main() {
     await evaluate("document.getElementById('aiShow').click(); true");
     assert.strictEqual((await toggle()).on, 'true');
     // Hovering a step marks its nodes; clicking it highlights them.
-    await openDrawer('steps');
+    await openDrawer('how');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseenter')); true");
     assert(await evaluate("drawnNodes('visited').length > 0"), 'hover marks the step nodes');
     await evaluate("document.querySelectorAll('#aiSteps .stepi')[1].dispatchEvent(new MouseEvent('mouseleave')); true");
@@ -254,7 +256,7 @@ async function main() {
     assert.strictEqual((await toggle()).on, 'false', 'a step highlight is not the answer highlight');
     assert.strictEqual(await evaluate('cg.S.highlight.ids.size'), 3);
     // Evidence links open the cited line.
-    await openDrawer('evidence');
+    await openDrawer('how');
     await evaluate("window.__sent.length = 0; document.querySelector('#answer .evidence a.site').click(); true");
     assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/canvas.cpp', line: 18 });
     // Explain from the details panel always uses Ask.
@@ -264,7 +266,7 @@ async function main() {
     // 14. History: answers are kept, newest first; an old one comes back with its steps and highlight.
     assert(await evaluate('waitFor(() => !cg.S.ai.busy && cg.S.history.length === 2, 3000)'), 'second answer saved');
     // History sits behind a button with its count, in a popover that closes on an outside click.
-    assert.strictEqual(await evaluate("document.getElementById('historyBtn').textContent"), '⟲ 2');
+    assert.strictEqual(await evaluate("document.getElementById('historyBtn').textContent.replace(/\\s+/g, ' ').trim()"), '⟲ Recent questions 2');
     assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), true);
     await evaluate("document.getElementById('historyBtn').click(); true");
     assert.strictEqual(await evaluate("document.getElementById('history').classList.contains('hidden')"), false);
@@ -287,7 +289,7 @@ async function main() {
     })`));
     assert.deepStrictEqual(
       [restored.q, restored.from, restored.trace, restored.strip, restored.popover, restored.toggle, restored.path, restored.again],
-      ['How are shapes drawn?', true, true, ['route:Route 4*', 'steps:3 steps', 'evidence:2 sources', 'conf:high'], true, 'true', 4, true]
+      ['How are shapes drawn?', true, true, ['route:Route 4*', 'how:How it was found'], true, 'true', 4, true]
     );
     assert.match(restored.text, /About “How are shapes drawn\?”/);
     assert.match(restored.when, /just now/);
@@ -381,9 +383,9 @@ async function main() {
     await evaluate(`window.__summaryCount = 0; document.querySelector('.tabs [data-tab="details"]').click(); cg.reveal(nodeByName('render').id, { center: false }); true`);
     assert.match(await evaluate("document.getElementById('aiSum').textContent"), /Summarizing/);
     assert(await evaluate("waitFor(() => document.querySelector('#aiSum p'))"), 'summary shown');
-    const sum = () => evaluate(`JSON.stringify({ text: (document.querySelector('#aiSum p') || {}).textContent, tags: [...document.querySelectorAll('#aiSum .pill')].map(p => p.textContent), notes: document.querySelectorAll('#aiSum li').length, count: window.__summaryCount, structure: !!document.querySelector('#tab-details .desc') })`).then(JSON.parse);
+    const sum = () => evaluate(`JSON.stringify({ text: (document.querySelector('#aiSum p') || {}).textContent, tags: [...document.querySelectorAll('#aiSum .pill')].map(p => p.textContent), notes: document.querySelectorAll('#aiSum li').length, count: window.__summaryCount, structure: !!document.querySelector('#tab-details .desc:not(.hidden)') })`).then(JSON.parse);
     let sm = await sum();
-    assert.deepStrictEqual(sm, { text: '(1) render draws every shape onto the canvas and logs each one.', tags: ['rendering', 'entry point'], notes: 1, count: 1, structure: true });
+    assert.deepStrictEqual(sm, { text: '(1) render draws every shape onto the canvas and logs each one.', tags: ['rendering', 'entry point'], notes: 1, count: 1, structure: false }, 'the summary replaces the generated description');
     await evaluate("document.querySelector('#aiSum [data-sum-refresh]').click(); true");
     assert.match(await evaluate("document.getElementById('aiSum').textContent"), /Summarizing/);
     assert(await evaluate("waitFor(() => /^\\(2\\)/.test((document.querySelector('#aiSum p') || {}).textContent || ''))"), 'refreshed');
@@ -407,19 +409,19 @@ async function main() {
 
     // 17. Change impact: from the details panel, ranked by risk, colored on the graph, per kind of change.
     await open('');
-    await evaluate("document.querySelector('.tabs [data-tab=\"impact\"]').click(); true");
-    assert.match(await evaluate("document.getElementById('tab-impact').textContent"), /What if I change this\?/);
+    assert.strictEqual(await evaluate("!!document.querySelector('.tabs [data-tab=\"impact\"]')"), false, 'impact is a view of Details, not a tab');
     await evaluate(`cg.reveal(nodeByName('log_message').id, { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); window.__sent.length = 0; document.querySelector('[data-act="impact"]').click(); true`);
     assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impact'))")), ['id', 'changeType']), { id: await evaluate("nodeByName('log_message').id"), changeType: 'signature' });
     assert(await evaluate("waitFor(() => document.querySelector('#tab-impact .impsum'))"), 'impact shown');
     const impact = () => evaluate(`JSON.stringify({
       tab: cg.S.tab,
-      change: document.querySelector('.impchange .active').dataset.change,
+      change: document.getElementById('impChange').value,
+      tabBtn: document.querySelector('.tabs button.active').dataset.tab,
       sum: document.querySelector('.impsum').textContent.replace(/\\s+/g, ' ').trim(),
-      groups: [...document.querySelectorAll('#tab-impact > details:not(.impcheck) > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
+      groups: [...document.querySelectorAll('#tab-impact > details:not(.impnotebox) > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
       items: [...document.querySelectorAll('#tab-impact ul.imp li')].map(li => li.className + ' ' + li.querySelector('.risk').textContent + ' ' + li.querySelector('.chip').textContent.trim()),
       notes: [...document.querySelectorAll('.impnotes li')].map(li => li.textContent),
-      predict: !!document.querySelector('#tab-impact .predict'),
+      predict: /prediction/.test(document.querySelector('.impsum .pill').title),
       shown: (document.getElementById('impShow') || {}).ariaPressed || document.getElementById('impShow') && document.getElementById('impShow').getAttribute('aria-pressed'),
       label: cg.S.highlight && cg.S.highlight.label,
       high: drawnNodes('imp-high').map(id => cg.S.nodes.get(id).name),
@@ -428,7 +430,8 @@ async function main() {
     let im = await impact();
     assert.strictEqual(im.tab, 'impact');
     assert.strictEqual(im.change, 'signature');
-    assert.strictEqual(im.sum, 'high risk 5 places in 3 files may need attention');
+    assert.strictEqual(im.tabBtn, 'details', 'the Details tab stays active');
+    assert.strictEqual(im.sum, 'high risk 5 places in 3 files2 high0 medium3 low Shown on graph');
     assert.deepStrictEqual(im.groups, ['Calls it directly 2', 'Includes its header 3']);
     assert.deepStrictEqual(im.items.slice(0, 2).map(s => s.split(' ').slice(0, 2).join(' ')), ['imp-high 100', 'imp-high 100']);
     assert.ok(im.items.slice(2).every(s => s.startsWith('imp-low')));
@@ -440,7 +443,7 @@ async function main() {
     // Callers inside collapsed files color the file they are in.
     assert.ok(im.high.length >= 1, 'high-risk nodes are colored: ' + JSON.stringify(im));
     // Another kind of change is worked out again.
-    await evaluate("window.__sent.length = 0; document.querySelector('[data-change=\"behavior\"]').click(); true");
+    await evaluate("window.__sent.length = 0; (s => { s.value = 'behavior'; s.dispatchEvent(new Event('change')); })(document.getElementById('impChange')); true");
     assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impact'))")).changeType, 'behavior');
     assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'behavior' && document.querySelector('#tab-impact .impsum'))"), 'behavior shown');
     im = await impact();
@@ -457,8 +460,8 @@ async function main() {
     // A header: renaming it breaks every file that includes it.
     await evaluate(`cg.reveal('file:c/logger.h', { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="impact"]').click(); true`);
     assert(await evaluate("waitFor(() => cg.S.impact.target === 'file:c/logger.h' && cg.S.impact.result)"), 'header impact');
-    assert.strictEqual(await evaluate("document.querySelector('[data-change=\"signature\"]').textContent"), 'Interface');
-    await evaluate("document.querySelector('[data-change=\"rename\"]').click(); true");
+    assert.strictEqual(await evaluate("document.querySelector('#impChange option[value=\"signature\"]').textContent"), 'Interface');
+    await evaluate("(s => { s.value = 'rename'; s.dispatchEvent(new Event('change')); })(document.getElementById('impChange')); true");
     assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'rename')"));
     im = await impact();
     assert.deepStrictEqual(im.groups, ['Includes the file 3'], 'logger.c includes it too, which outranks implementing it');
@@ -466,49 +469,11 @@ async function main() {
     await evaluate(`cg.reveal('dir:src', { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); true`);
     assert.strictEqual(await evaluate("!!document.querySelector('[data-act=\"impact\"]')"), false);
 
-    // 18. The AI checks the riskiest places, and the prediction is checked against edits.
-    await evaluate(`cg.reveal(nodeByName('log_message').id, { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="impact"]').click(); true`);
-    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.target === nodeByName('log_message').id && document.getElementById('impAI'))"), 'AI button');
-    assert.strictEqual(await evaluate('cg.S.impact.changeType'), 'rename', 'the last kind of change is kept');
-    await evaluate("document.querySelector('[data-change=\"signature\"]').click(); true");
-    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'signature' && document.getElementById('impAI'))"));
-    assert.match(await evaluate("document.querySelector('.impai').textContent"), /reads the code at the 2 riskiest places/);
-    await evaluate(`const d = document.getElementById('impDesc'); d.value = 'add an int error code parameter'; d.dispatchEvent(new Event('input')); window.__sent.length = 0; document.getElementById('impAI').click(); true`);
-    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impactAI'))")), ['changeType', 'description']), { changeType: 'signature', description: 'add an int error code parameter' });
-    assert.match(await evaluate("document.querySelector('.impai').textContent"), /Reading 2 places/);
-    assert(await evaluate("waitFor(() => cg.S.impact.ai && cg.S.impact.ai.verdicts)"), 'verdicts arrive');
-    assert.match(await evaluate('window.__impactPrompt'), /Planned change: signature or return type: add an int error code parameter/);
-    const ai = JSON.parse(await evaluate(`JSON.stringify({
-      status: document.querySelector('.impai .muted').textContent,
-      rows: [...document.querySelectorAll('#tab-impact ul.imp li')].map(li => [li.querySelector('.chip').textContent.trim(), li.querySelector('.risk').textContent, (li.querySelector('.verdict') || {}).textContent || '', (li.querySelector('.vreason') || {}).textContent || '']),
-      sum: [...document.querySelectorAll('.impcounts span')].map(s => s.textContent).join(', ')
-    })`));
-    assert.strictEqual(ai.status, 'Checked 2 places via Harness: 1 break, 0 need review, 1 likely fine.');
-    const verdictRows = ai.rows.filter(r => r[2]);
-    assert.deepStrictEqual(verdictRows.map(r => [r[1], r[2]]).sort(), [['100', 'breaks'], ['15', 'likely fine']]);
-    assert.ok(verdictRows.every(r => /^Reason \d+ line 3$/.test(r[3])), JSON.stringify(verdictRows));
-    assert.strictEqual(ai.sum, '1 high, 0 medium, 4 low', 'counts follow the verdicts');
-    // The graph uses the adjusted risk.
-    assert.strictEqual(await evaluate("drawnNodes('imp-high').length >= 1"), true);
-    // Check against edits: hits, false alarms and unrelated changes.
-    await evaluate("window.__sent.length = 0; document.getElementById('impCheck').click(); true");
-    assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impactCheck'))")).changeType, 'signature');
-    assert(await evaluate("waitFor(() => cg.S.impact.check && cg.S.impact.check.result)"), 'check result');
-    const chk = JSON.parse(await evaluate(`JSON.stringify({
-      text: document.querySelector('.impcheck p:not(.muted)').textContent,
-      score: [...document.querySelectorAll('.impscore > span')].map(s => s.textContent).join(' '),
-      groups: [...document.querySelectorAll('.impcheck details > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
-      hit: [...document.querySelectorAll('.impcheck details')][0].querySelector('.chip').textContent.trim()
-    })`));
-    assert.strictEqual(chk.text, 'It was removed or its signature changed. 2 other places changed.');
-    assert.strictEqual(chk.score, 'Precision 50% Recall 100%');
-    assert.deepStrictEqual(chk.groups, ['Predicted and changed 1', 'Predicted, not changed 1', 'Changed, not predicted 0', 'Other changes, probably unrelated 1']);
-    assert.match(chk.hit, /main/);
-    // A new kind of change starts over.
-    await evaluate("document.querySelector('[data-change=\"behavior\"]').click(); true");
-    assert.deepStrictEqual(JSON.parse(await evaluate('JSON.stringify([cg.S.impact.ai, cg.S.impact.check])')), [null, null]);
+    // Back to the details of the node.
+    await evaluate("document.querySelector('#tab-impact [data-back]').click(); true");
+    assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify([cg.S.tab, document.getElementById('tab-impact').classList.contains('hidden')])")), ['details', true]);
 
-    // 19. The AI layer: concepts to explore, and AI-inferred links that are off until turned on.
+    // 19. The AI layer: concepts to explore; its inferred links are not shown.
     await open('?semantic');
     const intro = JSON.parse(await evaluate(`JSON.stringify({
       pills: [...document.querySelectorAll('#tab-details .concepts a.concept')].map(a => a.textContent.replace(/\\s+/g, ' ').trim()),
@@ -516,39 +481,25 @@ async function main() {
       button: document.getElementById('semBuild').textContent
     })`));
     assert.deepStrictEqual(intro.pills, ['geometry 15', 'shapes 15', 'logging 6', 'rendering 5', 'app startup 2']);
-    assert.match(intro.status, /AI layer: 5 concepts on 28 elements, 2 inferred links .* by Harness, 2h ago\./);
-    assert.strictEqual(intro.button, 'Update AI layer');
+    assert.strictEqual(intro.status, '5 concepts on 28 elements, by Harness, 2h ago.');
+    assert.strictEqual(intro.button, 'Update concepts');
     await evaluate("[...document.querySelectorAll('#tab-details a.concept')].find(a => a.dataset.concept === 'logging').click(); true");
     assert.strictEqual(await evaluate('cg.S.highlight.label'), 'Concept: logging (6)');
     assert.ok(await evaluate("[...cg.S.highlight.ids].every(id => cg.S.concepts[id].includes('logging'))"));
-    // Off by default; the filter turns it on.
-    assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), false);
+    // No inferred links: not in the graph, the filters or the details panel.
+    assert.strictEqual(await evaluate("cg.S.graph.edges.some(e => e.kind === 'semantic')"), false);
+    assert.strictEqual(await evaluate("!!document.querySelector('[data-edge-kind=\"semantic\"]')"), false);
     await evaluate(`cg.S.highlight = null; cg.reveal(cg.S.graph.nodes.find(n => n.qname === 'geo::Circle::area').id, { center: false }); true`);
     assert.strictEqual(await evaluate("drawnEdges('ek-semantic').length"), 0);
-    await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"semantic\"]').click(); document.querySelector('#filtersBtn').click(); true");
-    assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), true);
-    assert.ok(await evaluate("drawnEdges('ek-semantic').length >= 1"), 'inferred link drawn');
-    // The details panel: concepts and the inferred link with confidence, reason and evidence.
     const det = JSON.parse(await evaluate(`JSON.stringify({
-      concepts: [...document.querySelectorAll('#tab-details .dhead ~ .concepts a.concept')].map(a => a.textContent),
-      sum: document.querySelector('details.semrel summary').textContent.replace(/\\s+/g, ' ').trim(),
-      item: document.querySelector('details.semrel li').textContent.replace(/\\s+/g, ' ').trim()
+      concepts: [...document.querySelectorAll('#tab-details #dConcepts a.concept')].map(a => a.textContent),
+      text: document.getElementById('tab-details').textContent
     })`));
     assert.deepStrictEqual(det.concepts, ['geometry', 'shapes']);
-    assert.strictEqual(det.sum, 'AI-inferred links 1');
-    assert.match(det.item, /^alternative implementation of .*Rectangle::area 86% shape\.cpp:17 ?both compute the area of a shape$/);
-    await evaluate("window.__sent.length = 0; document.querySelector('details.semrel a.site').click(); true");
-    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/shape.cpp', line: 17 });
-    // The edge itself explains where it came from.
-    await evaluate("click(document.querySelector('#layerEdges .edge.ek-semantic')); true");
-    assert(await evaluate("waitFor(() => /Inferred by the AI/.test(document.getElementById('tab-details').textContent))"), 'edge details shown');
-    const edgeText = await evaluate("document.getElementById('tab-details').textContent.replace(/\\s+/g, ' ')");
-    assert.match(edgeText, /alternative implementation of/);
-    assert.match(edgeText, /Inferred by the AI \(Harness\), 2h ago/);
-    assert.match(edgeText, /Looked at because both (override geo::Shape::area|derive from geo::Shape)\./);
+    assert.doesNotMatch(det.text, /AI-inferred/);
     // Building it from scratch.
     await open('');
-    assert.strictEqual(await evaluate("document.getElementById('semBuild').textContent"), 'Build AI layer');
+    assert.strictEqual(await evaluate("document.getElementById('semBuild').textContent"), 'Tag concepts with AI');
     await evaluate("window.__sent.length = 0; document.getElementById('semBuild').click(); true");
     assert.ok(await evaluate("window.__sent.some(m => m.type === 'buildSemantic')"));
     assert(await evaluate("waitFor(() => document.getElementById('semBuild') && document.getElementById('semBuild').disabled)"), 'busy while building');

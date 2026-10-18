@@ -21,7 +21,7 @@ export const S = {
   code: new Map(), // "id|side" -> {status, lines, html, startLine, file, truncated, error}
   selected: saved.selected || null,
   selectedEdge: null,
-  edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true, semantic: false }, saved.edgeOn || {}),
+  edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true }, saved.edgeOn || {}),
   showFields: saved.showFields !== undefined ? saved.showFields : true,
   showNamespaces: saved.showNamespaces !== undefined ? saved.showNamespaces : true,
   showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,
@@ -44,6 +44,7 @@ export const S = {
   semantic: null, // {model, time, edges, concepts, tagged} when the AI layer is built
   semanticBusy: false,
   historyOpen: false, // the history popover in the Ask AI tab
+  aiMenuOpen: false, // the ⋯ menu next to Ask
   contextOff: null, // node id the user left out of the question's context (reset by selecting another)
   layout: null, // the SVG renderer's boxes: {vis, abs, width, height}
   vis: null, // the visible graph from computeVisible(): {visible, visibleSet, rep, repOf, edges, bundles}

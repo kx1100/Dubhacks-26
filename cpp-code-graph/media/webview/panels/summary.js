@@ -5,6 +5,7 @@ import { $ } from '../shell.js';
 import { SUMMARY_KINDS } from '../constants.js';
 import { esc } from '../util.js';
 import { vscode, S } from '../state.js';
+import { syncSummaryExtras } from './details.js';
 
 let summaryTimer = null;
 
@@ -61,6 +62,7 @@ export function updateSummaryBlock(id) {
   if (!el || S.selected !== id || !n) return;
   el.outerHTML = summaryBlock(n) || '<span id="aiSum"></span>';
   bindSummary(n);
+  syncSummaryExtras(n);
 }
 
 export function onSummary(m) {

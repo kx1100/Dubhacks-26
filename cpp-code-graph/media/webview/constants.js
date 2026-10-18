@@ -19,8 +19,7 @@ export const EDGE_KINDS = [
   { kind: 'overrides', label: 'Overrides', desc: 'method → base method it overrides' },
   { kind: 'includes', label: 'Includes', desc: 'file → included file' },
   { kind: 'uses', label: 'Uses type', desc: 'code → class/enum it depends on' },
-  { kind: 'pairs', label: 'Header ↔ source', desc: 'file that declares something → file that implements it (list.h → list.c)' },
-  { kind: 'semantic', label: 'AI-inferred', desc: 'links the AI found by reading the code: alternative implementations, replacements, validators (build the AI layer first)' }
+  { kind: 'pairs', label: 'Header ↔ source', desc: 'file that declares something → file that implements it (list.h → list.c)' }
 ];
 export const REL_LABELS = {
   calls: ['Calls', 'Called by'],
@@ -28,12 +27,10 @@ export const REL_LABELS = {
   overrides: ['Overrides', 'Overridden by'],
   includes: ['Includes', 'Included by'],
   uses: ['Uses types', 'Used by'],
-  pairs: ['Implemented in', 'Declares things implemented here'],
-  semantic: ['AI-inferred links', 'AI-inferred links to it']
+  pairs: ['Implemented in', 'Declares things implemented here']
 };
-export const EDGE_VERBS = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type', pairs: 'is implemented in', semantic: 'is linked by the AI to' };
-/** The verb for an edge: an AI-inferred one says what kind of link it is. */
-export const edgeVerb = e => (e.kind === 'semantic' && e.raw && e.raw[0] && e.raw[0].label) || EDGE_VERBS[e.kind];
+export const EDGE_VERBS = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type', pairs: 'is implemented in' };
+export const edgeVerb = e => EDGE_VERBS[e.kind];
 
 // Kinds whose source can be opened inside the node.
 export const CODE_KINDS = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'variable', 'field']);
@@ -87,5 +84,3 @@ export const CHANGE_TITLES = {
   remove: 'It is deleted'
 };
 export const TIER_ORDER = { high: 3, medium: 2, low: 1 };
-
-export const VERDICT_LABELS = { breaks: 'breaks', review: 'needs review', fine: 'likely fine' };

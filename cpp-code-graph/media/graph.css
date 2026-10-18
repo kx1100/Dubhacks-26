@@ -1586,20 +1586,23 @@ ol.route {
   filter: drop-shadow(0 0 5px var(--focus));
 }
 .imphead {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 6px;
+  font-size: 13px;
+  margin: 6px 0 8px;
+  line-height: 1.8;
 }
-.impchange {
-  display: flex;
-  margin-bottom: 6px;
+.imphead select {
+  font: inherit;
+  color: var(--vscode-dropdown-foreground, var(--fg));
+  background: var(--vscode-dropdown-background, var(--panel));
+  border: 1px solid var(--vscode-dropdown-border, var(--border));
+  border-radius: 3px;
+  padding: 0 2px;
 }
-.predict {
-  font-size: 11px;
-  color: var(--muted);
-  border-left: 3px solid var(--yellow);
-  padding: 2px 8px;
-  margin: 6px 0 10px;
+.impback {
+  font-size: 12px;
+}
+.impsum .hltoggle {
+  margin-left: auto;
 }
 .impsum {
   display: flex;
@@ -1644,62 +1647,8 @@ ul.imp .imp-high .risk { background: var(--imp-high); }
 ul.imp .imp-medium .risk { background: var(--imp-medium); }
 ul.imp .imp-low .risk { background: var(--imp-low); }
 
-.impai {
-  margin: 8px 0 10px;
-}
-.impai textarea {
-  width: 100%;
-  resize: vertical;
-}
-.impai .busy {
-  animation: visited-pulse 0.9s ease-in-out infinite alternate;
-}
-.verdict {
-  display: inline-block;
-  margin-left: 4px;
-  padding: 0 6px;
-  border-radius: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  border: 1px solid currentColor;
-  white-space: nowrap;
-}
-.verdict.v-breaks { color: var(--red); }
-.verdict.v-review { color: var(--orange); }
-.verdict.v-fine { color: var(--green); }
-ul.imp .vreason {
-  flex-basis: 100%;
-  margin-left: 30px;
-  font-size: 11px;
-  color: var(--muted);
-}
-.impcheck {
-  margin-top: 14px;
-  border-top: 1px solid var(--border);
-  padding-top: 6px;
-}
-.impscore {
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  margin: 4px 0;
-}
+/* AI layer: concepts */
 
-/* AI layer: inferred links and concepts */
-
-:root {
-  --e-semantic: var(--purple);
-}
-.ek-semantic { --ec: var(--e-semantic); }
-.edge.ek-semantic .line {
-  stroke-dasharray: 2 4;
-  stroke-linecap: round;
-  stroke-width: 2px;
-}
-.legend-line.ek-semantic {
-  stroke-dasharray: 2 4;
-  stroke-linecap: round;
-}
 .concepts {
   display: flex;
   flex-wrap: wrap;
@@ -1720,23 +1669,21 @@ a.concept {
 a.concept:hover {
   background: color-mix(in srgb, var(--purple) 15%, transparent);
 }
-.conf-num {
-  font-size: 10px;
-  color: var(--purple);
-  margin-left: 2px;
-}
-details.semrel summary {
-  color: var(--purple);
-}
 
-details.semrel .vreason,
-ul.semlist .vreason {
-  font-size: 11px;
+/* Side panel: folded extras */
+details.moreacts > summary,
+details.morerels > summary {
   color: var(--muted);
-  margin-left: 4px;
+  font-size: 12px;
 }
-details.semrel a.site,
-ul.semlist a.site {
+details.morerels > details {
+  margin-left: 10px;
+}
+.aimenu .row {
+  border-radius: 3px;
+  padding: 3px 6px;
   white-space: nowrap;
-  word-break: normal;
+}
+.aimenu .row:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.2));
 }

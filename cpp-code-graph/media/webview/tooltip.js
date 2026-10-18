@@ -18,8 +18,7 @@ export function tooltipHtml(id, edgeKey) {
     const e = findEdge(edgeKey);
     if (e) {
       const verb = edgeVerb(e);
-      const ai = e.kind === 'semantic' && e.raw[0] ? `<div class="muted">AI-inferred, ${Math.round(e.raw[0].confidence * 100)}% confident${e.raw[0].reason ? ': ' + esc(e.raw[0].reason) : ''}</div>` : '';
-      html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.t).name)}</b>${ai}${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
+      html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.t).name)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
     }
   }
   return html;

@@ -49,7 +49,6 @@ app.innerHTML = `
     <div class="tabs">
       <button data-tab="details" class="active">Details</button>
       <button data-tab="ai">Ask AI</button>
-      <button data-tab="impact">Impact</button>
     </div>
     <div id="tab-details" class="tabbody"></div>
     <div id="tab-impact" class="tabbody hidden"></div>

@@ -1,7 +1,7 @@
-// Details panel: the selected node or edge, its relations, dependencies and AI layer.
+// Details panel: the selected node or edge, its relations, dependencies and concepts.
 
 import { $ } from '../shell.js';
-import { KIND_INFO, REL_LABELS, EDGE_VERBS, edgeVerb, IMPACT_KINDS } from '../constants.js';
+import { KIND_INFO, REL_LABELS, EDGE_VERBS, IMPACT_KINDS } from '../constants.js';
 import { esc, ago } from '../util.js';
 import { vscode, S, persist } from '../state.js';
 import { canShowCode } from '../code.js';
@@ -25,7 +25,7 @@ export function locLink(file, line, side, label) {
   return `<a class="loc" data-open-file="${esc(file)}" data-open-line="${line || 1}" data-side="${side || 'target'}">${esc(label || file + ':' + (line || 1))}</a>`;
 }
 
-export function relationSection(title, edges, endpoint) {
+export function relationSection(title, edges, endpoint, closed) {
   if (!edges.length) return '';
   const seen = new Map();
   for (const e of edges) {
@@ -49,7 +49,7 @@ export function relationSection(title, edges, endpoint) {
     })
     .join('');
   const more = items.length > shown.length ? `<li class="muted">… and ${items.length - shown.length} more</li>` : '';
-  return `<details open><summary>${esc(title)} <span class="muted">${items.length}</span></summary><ul class="rel">${html}${more}</ul></details>`;
+  return `<details${closed ? '' : ' open'}><summary>${esc(title)} <span class="muted">${items.length}</span></summary><ul class="rel">${html}${more}</ul></details>`;
 }
 
 export function describeNode(n) {
@@ -151,13 +151,23 @@ export function renderDetails() {
         .map(c => `<li>${nodeChip(c)}</li>`)
         .join('')}${children.length > 150 ? `<li class="muted">… and ${children.length - 150} more</li>` : ''}</ul></details>`
     : '';
-  let rels = '';
-  for (const k of ['calls', 'inherits', 'overrides', 'includes', 'uses', 'pairs']) {
-    rels += relationSection(REL_LABELS[k][0], byKind(out, k), 't');
-    rels += relationSection(REL_LABELS[k][1], byKind(inc, k), 's');
+  // Calls are what most people look for first; the other relationships wait under one fold.
+  const rels = relationSection(REL_LABELS.calls[0], byKind(out, 'calls'), 't') + relationSection(REL_LABELS.calls[1], byKind(inc, 'calls'), 's');
+  let more = '';
+  let moreCount = 0;
+  for (const k of ['inherits', 'overrides', 'includes', 'uses', 'pairs']) {
+    for (const [title, edges, end] of [[REL_LABELS[k][0], byKind(out, k), 't'], [REL_LABELS[k][1], byKind(inc, k), 's']]) {
+      const sec = relationSection(title, edges, end, true);
+      if (sec) moreCount++;
+      more += sec;
+    }
   }
-  rels += semanticSection(n.id, out, inc);
-  if (n.kind === 'file' || n.kind === 'dir' || n.kind === 'namespace' || n.kind === 'class' || n.kind === 'struct') rels += aggregatedDeps(n.id);
+  if (n.kind === 'file' || n.kind === 'dir' || n.kind === 'namespace' || n.kind === 'class' || n.kind === 'struct') {
+    const deps = aggregatedDeps(n.id);
+    moreCount += (deps.match(/<details>/g) || []).length;
+    more += deps;
+  }
+  const moreRels = more ? `<details class="morerels"><summary>More relationships <span class="muted">${moreCount}</span></summary>${more}</details>` : '';
   const isFn = n.kind === 'function' || n.kind === 'method';
   const status = n.status ? `<span class="pill st-${n.status}">${n.status}</span>` : '';
   el.innerHTML = `
@@ -165,24 +175,27 @@ export function renderDetails() {
     ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
     ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
     ${summaryBlock(n)}
-    ${conceptPills(n.id)}
-    <p class="desc">${describeNode(n)}</p>
+    <div id="dConcepts"${summaryReady(n) && summaryHasTags(n) ? ' class="hidden"' : ''}>${conceptPills(n.id)}</div>
+    <p class="desc${summaryReady(n) ? ' hidden' : ''}" id="dDesc">${describeNode(n)}</p>
     ${locs}
     <div class="actions">
       ${n.file ? '<button data-act="open" class="primary">Open source</button>' : ''}
+      <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
+      ${IMPACT_KINDS.has(n.kind) && n.status !== 'removed' ? '<button data-act="impact" title="Predict what else may need to change if you change this">What if I change this?</button>' : ''}
+    </div>
+    <details class="moreacts"><summary>More actions</summary><div class="actions">
       ${(n.defFile && n.file && n.defFile !== n.file) || n.declFile ? '<button data-act="openDecl">Declaration</button>' : ''}
       ${canShowCode(n) ? `<button data-act="code" title="Show or hide the source inside the graph node (C)">${S.codeOpen.has(n.id) ? 'Hide code' : 'View code'}</button>` : ''}
       ${children.length ? `<button data-act="toggle">${S.expanded.has(n.id) ? 'Collapse' : 'Expand'}</button>` : ''}
       ${isFn ? '<button data-act="callees" title="Highlight everything this function calls, directly or indirectly">Trace callees</button><button data-act="callers" title="Highlight everything that leads to this function">Trace callers</button>' : ''}
       <button data-act="center">Center</button>
       <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
-      <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
       ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
-      ${IMPACT_KINDS.has(n.kind) && n.status !== 'removed' ? '<button data-act="impact" title="Predict what else may need to change if you change this">What if I change this?</button>' : ''}
       ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
-    </div>
+    </div></details>
     ${members}
-    ${rels || (children.length ? '' : '<p class="muted">No relationships found.</p>')}`;
+    ${rels}${moreRels}
+    ${rels || moreRels || children.length ? '' : '<p class="muted">No relationships found.</p>'}`;
   el.querySelectorAll('[data-act]').forEach(b => {
     b.onclick = () => {
       const act = b.dataset.act;
@@ -277,41 +290,29 @@ export function entryPoints() {
 }
 
 // ---------------------------------------------------------------------------
-// AI layer: concepts and inferred links (see src/ai/semantic.js)
+// AI layer: concepts (see src/ai/semantic.js)
+
+/** Whether the AI summary of the node is showing (it then replaces the generated description). */
+export function summaryReady(n) {
+  const e = S.summaries.get(n.id);
+  return !!(e && e.status === 'ready' && e.summary);
+}
+
+/** Whether the AI summary already shows the node's tags (so the concept pills would repeat them). */
+export function summaryHasTags(n) {
+  return summaryReady(n) && !!(S.summaries.get(n.id).summary.tags || []).length;
+}
+
+/** After the summary arrives: hide what it repeats. */
+export function syncSummaryExtras(n) {
+  if ($('dConcepts')) $('dConcepts').classList.toggle('hidden', summaryHasTags(n));
+  if ($('dDesc')) $('dDesc').classList.toggle('hidden', summaryReady(n));
+}
 
 export function conceptPills(id) {
   const tags = S.concepts[id];
   if (!tags || !tags.length) return '';
   return `<div class="concepts"><span class="aibadge" title="Concepts tagged by the AI">AI</span>${tags.map(t => `<a class="concept" data-concept="${esc(t)}" title="Highlight everything tagged ${esc(t)}">${esc(t)}</a>`).join('')}</div>`;
-}
-
-/** One line per inferred link, with its confidence, reason and the line that shows it. */
-export function semanticItem(e, otherId, outgoing) {
-  const n = S.nodes.get(otherId);
-  if (!n) return '';
-  const label = e.symmetric || outgoing ? e.label : 'is ' + e.label.replace(/ of$/, '').replace(/^replaces$/, 'replaced by').replace(/^validates for$/, 'validated by');
-  const ev = e.evidence ? ` <a class="site" data-open-file="${esc(e.evidence.file)}" data-open-line="${e.evidence.line}" data-side="target" title="${esc(e.evidence.quote)}">${esc(e.evidence.file.split('/').pop() + ':' + e.evidence.line)}</a>` : ' <span class="tag" title="The AI gave no evidence that could be found in the code">no evidence</span>';
-  return `<li><span class="muted">${esc(label)}</span> ${nodeChip(otherId)} <span class="conf-num" title="How confident the AI is">${Math.round(e.confidence * 100)}%</span>${ev}${e.reason ? `<div class="vreason">${esc(e.reason)}</div>` : ''}</li>`;
-}
-
-export function semanticSection(id, out, inc) {
-  const items = [
-    ...out.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.t, true)),
-    ...inc.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.s, false))
-  ].filter(Boolean);
-  if (!items.length) return '';
-  return `<details open class="semrel"><summary>AI-inferred links <span class="muted">${items.length}</span></summary><ul class="rel">${items.join('')}</ul></details>`;
-}
-
-export function renderSemanticEdge(el, e) {
-  const items = e.raw.map(r => semanticItem(r, r.t, true).replace('<li>', `<li>${nodeChip(r.s)} `)).join('');
-  const r = e.raw[0];
-  const when = r.provenance && r.provenance.time ? ago(r.provenance.time) : '';
-  el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.s)} <span class="muted">${esc(edgeVerb(e))}</span> ${nodeChip(e.t)}</div>
-      <div class="muted">Inferred by the AI${r.provenance && r.provenance.model ? ' (' + esc(r.provenance.model) + ')' : ''}${when ? ', ' + when : ''}, not found in the code's structure. Check it before relying on it.</div></div></div>
-    ${r.hint ? `<p class="muted">Looked at because ${esc(r.hint)}.</p>` : ''}
-    <ul class="rel semlist">${items}</ul>`;
-  bindLinks(el);
 }
 
 /** Highlights every node tagged with a concept. */
@@ -334,9 +335,9 @@ export function bindConcepts(el) {
 /** The AI layer part of the start page: concepts to explore, and building or rebuilding it. */
 export function semanticIntro() {
   const busy = S.semanticBusy;
-  const btn = `<button id="semBuild" class="${S.semantic ? '' : 'primary'}"${busy ? ' disabled' : ''}>${busy ? 'Building…' : S.semantic ? 'Update AI layer' : 'Build AI layer'}</button>`;
+  const btn = `<button id="semBuild" class="${S.semantic ? '' : 'primary'}"${busy ? ' disabled' : ''}>${busy ? 'Tagging…' : S.semantic ? 'Update concepts' : 'Tag concepts with AI'}</button>`;
   if (!S.semantic) {
-    return `<h3>AI layer</h3><p class="muted">Let the AI tag every function and class with the concept it serves (logging, rendering, parsing…) and find links the structure doesn't show: alternative implementations, replacements, validators. Results are saved, and only changed code is looked at again.</p><div class="askrow">${btn}</div>`;
+    return `<h3>Concepts</h3><p class="muted">Let the AI tag every function and class with the concept it serves (logging, rendering, parsing…). Results are saved, and only changed code is looked at again.</p><div class="askrow">${btn}</div>`;
   }
   const counts = new Map();
   for (const tags of Object.values(S.concepts)) for (const t of tags) counts.set(t, (counts.get(t) || 0) + 1);
@@ -347,12 +348,11 @@ export function semanticIntro() {
     .join('');
   const s = S.semantic;
   return `<h3>Concepts</h3><div class="concepts">${pills || '<span class="muted">No concepts yet.</span>'}</div>
-    <p class="muted">AI layer: ${s.concepts} concept${s.concepts === 1 ? '' : 's'} on ${s.tagged} element${s.tagged === 1 ? '' : 's'}, ${s.edges} inferred link${s.edges === 1 ? '' : 's'} (turn on <b>AI-inferred</b> under <b>Show ▾</b>)${s.model ? ', by ' + esc(s.model) : ''}${s.time ? ', ' + ago(s.time) : ''}.</p>
+    <p class="muted">${s.concepts} concept${s.concepts === 1 ? '' : 's'} on ${s.tagged} element${s.tagged === 1 ? '' : 's'}${s.model ? ', by ' + esc(s.model) : ''}${s.time ? ', ' + ago(s.time) : ''}.</p>
     <div class="askrow">${btn}</div>`;
 }
 
 export function renderEdgeDetails(el, e) {
-  if (e.kind === 'semantic') return renderSemanticEdge(el, e);
   const verb = EDGE_VERBS[e.kind];
   const raw = e.raw
     .slice(0, 100)

@@ -10,8 +10,8 @@ import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSetti
 import { renderViewControls, renderBanner, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
 import { renderDetails } from './panels/details.js';
 import { onSummary } from './panels/summary.js';
-import { requestImpact, onImpact, impactOn, renderImpact } from './panels/impact.js';
-import { renderSuggestions, ask, setVisited, renderAnswer, renderHistory, applyAiHighlight } from './panels/ask.js';
+import { requestImpact, onImpact, renderImpact } from './panels/impact.js';
+import { renderSuggestions, ask, setVisited, renderAnswer, renderHistory, renderOpts, applyAiHighlight } from './panels/ask.js';
 import { renderer, useRenderer } from './renderer.js';
 import { svgRenderer } from './renderer-svg.js';
 
@@ -269,7 +269,9 @@ export function revealAll(ids) {
 export function switchTab(tab, quiet) {
   if (quiet && S.tab === 'ai' && S.ai.busy) return;
   S.tab = tab;
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  // Impact is a view of the Details tab.
+  const button = tab === 'impact' ? 'details' : tab;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === button));
   for (const t of ['details', 'ai', 'impact']) $('tab-' + t).classList.toggle('hidden', tab !== t);
   if (tab === 'impact') renderImpact();
 }
@@ -342,6 +344,10 @@ $('filtersBtn').onclick = ev => {
 };
 document.addEventListener('click', ev => {
   if (!ev.target.closest('#filters') && ev.target.id !== 'filtersBtn') $('filters').classList.add('hidden');
+  if (S.aiMenuOpen && ev.target.isConnected && !ev.target.closest('#aiMenu, #aiMore')) {
+    S.aiMenuOpen = false;
+    renderOpts();
+  }
   if (S.historyOpen && ev.target.isConnected && !ev.target.closest('#history, #historyBtn')) {
     S.historyOpen = false;
     renderHistory();
@@ -469,16 +475,6 @@ window.addEventListener('message', ev => {
       S.semanticBusy = !!m.busy;
       if (!S.selected && !S.selectedEdge) renderDetails();
       break;
-    case 'impactAIResult':
-    case 'impactCheckResult': {
-      const imp = S.impact;
-      if (!imp || m.id !== imp.target || m.requested !== imp.changeType || m.cancelled) break;
-      if (m.type === 'impactAIResult') imp.ai = m.error ? { error: m.error } : { verdicts: new Map(m.verdicts.map(v => [v.id, v])), asked: m.asked, model: m.model };
-      else imp.check = { result: m };
-      if (S.tab === 'impact') renderImpact();
-      if (m.type === 'impactAIResult' && impactOn()) renderer.refreshStyle();
-      break;
-    }
     case 'aiHistory':
       S.history = m.entries || [];
       renderHistory();
@@ -490,7 +486,7 @@ window.addEventListener('message', ev => {
       break;
     case 'aiResult':
       S.ai = {
-        busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], open: S.ai.open === 'steps' ? 'steps' : undefined, error: !!m.error,
+        busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], open: S.ai.open === 'how' ? 'how' : undefined, error: !!m.error,
         answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, routes: m.routes, routeIdx: 0, evidence: m.evidence, confidence: m.confidence, confidenceReason: m.confidenceReason, model: m.model,
         entryId: m.entryId, time: m.time
       };

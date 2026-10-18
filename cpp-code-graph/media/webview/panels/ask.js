@@ -51,7 +51,7 @@ export function ask(q, mode, focusId) {
   vscode.postMessage({ type: 'ask', question: q, focus, mode });
 }
 
-/** The row under the question box: Trace, the selection as context, history, and Ask or Stop. */
+/** The row under the question box: the selection as context, a menu with Trace and history, and Ask or Stop. */
 export function renderOpts() {
   const el = $('aiOpts');
   const trace = S.aiMode === 'path';
@@ -63,14 +63,28 @@ export function renderOpts() {
     ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.name)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
   }
   const count = (S.history || []).length;
-  const hist = count ? `<button id="historyBtn" class="iconbtn" aria-expanded="${!!S.historyOpen}" title="Recent questions">⟲ ${count}</button>` : '';
+  // Trace shows as a chip only while it is on, so the mode is never hidden.
+  const traceOn = trace ? `<button id="traceOff" class="opt" aria-pressed="true" title="${esc(AI_MODES.path.desc)}. Click to ask a normal question.">⤳ <span class="lbl">Trace</span><span class="x">✕</span></button>` : '';
+  const menu = `<div class="popup aimenu${S.aiMenuOpen ? '' : ' hidden'}" id="aiMenu" style="left:auto;right:0;min-width:200px">
+      <div class="row" id="traceChip" role="menuitemcheckbox" aria-checked="${trace}" title="${esc(AI_MODES.path.desc)}">${trace ? '✓' : '⤳'} Trace an execution path</div>
+      ${count ? `<div class="row" id="historyBtn" role="menuitem" aria-expanded="${!!S.historyOpen}">⟲ Recent questions <span class="muted">${count}</span></div>` : ''}
+    </div>`;
+  const more = `<span class="menu-anchor"><button id="aiMore" class="iconbtn" aria-haspopup="menu" aria-expanded="${!!S.aiMenuOpen}" title="Trace a path, recent questions">⋯</button>${menu}</span>`;
   const go = S.ai.busy ? '<button id="cancelAsk">Stop</button>' : `<button id="askBtn" class="primary" title="${esc(AI_MODES[S.aiMode].desc)} (Ctrl+Enter)">${trace ? 'Trace' : 'Ask'}</button>`;
-  el.innerHTML = `<button id="traceChip" class="opt" aria-pressed="${trace}" title="${esc(AI_MODES.path.desc)}">⤳ <span class="lbl">Trace</span></button>${ctx}<span class="spacer"></span>${hist}${go}`;
-  $('traceChip').onclick = () => {
-    S.aiMode = trace ? 'ask' : 'path';
+  el.innerHTML = `${traceOn}${ctx}<span class="spacer"></span>${more}${go}`;
+  const setTrace = on => {
+    S.aiMode = on ? 'path' : 'ask';
+    S.aiMenuOpen = false;
     persist();
     renderOpts();
   };
+  $('aiMore').onclick = ev => {
+    ev.stopPropagation();
+    S.aiMenuOpen = !S.aiMenuOpen;
+    renderOpts();
+  };
+  $('traceChip').onclick = () => setTrace(!trace);
+  if ($('traceOff')) $('traceOff').onclick = () => setTrace(false);
   if ($('ctxChip'))
     $('ctxChip').onclick = () => {
       S.contextOff = S.contextOff === n.id ? null : n.id;
@@ -79,6 +93,7 @@ export function renderOpts() {
   if ($('historyBtn'))
     $('historyBtn').onclick = ev => {
       ev.stopPropagation();
+      S.aiMenuOpen = false;
       S.historyOpen = !S.historyOpen;
       renderHistory();
     };
@@ -181,6 +196,16 @@ export function openDrawer(a) {
   return a.mode === 'path' && shownRoute(a) ? 'route' : null;
 }
 
+/** How the answer was found: confidence, the code it cites and the investigation steps. */
+export function renderHow(a) {
+  const parts = [];
+  if (a.confidence) parts.push(renderConfidence(a));
+  else if (a.model) parts.push(`<div class="aidrawer muted">Answered by ${esc(a.model)}</div>`);
+  if (evidenceOf(a).length) parts.push(renderEvidence(a));
+  if ((a.steps || []).length) parts.push(renderSteps(a));
+  return parts.join('');
+}
+
 /** One strip of small toggles under the answer; each opens its drawer below. */
 export function renderStrip(a) {
   const open = openDrawer(a);
@@ -192,15 +217,14 @@ export function renderStrip(a) {
   const items = [];
   if (a.highlight && a.highlight.length) items.push('<button id="aiShow" class="mi hltoggle"></button>');
   if (route) items.push(item('route', `Route ${route.steps.length}`, '', 'The execution path, in call order'));
-  if (n) items.push(item('steps', `${n} step${n === 1 ? '' : 's'}`, '', 'How the AI investigated'));
-  if (ev) items.push(item('evidence', `${ev} source${ev === 1 ? '' : 's'}`, '', 'The code lines the answer cites'));
-  if (a.confidence) {
-    const why = a.confidenceReason ? `${a.confidence}: ${a.confidenceReason}` : CONF_TITLES[a.confidence] || '';
-    items.push(item('conf', `<span class="dot"></span>${esc(a.confidence)}`, `conf conf-${a.confidence}`, why));
-  } else if (a.model) items.push(`<span class="muted">via ${esc(a.model)}</span>`);
+  if (ev || n || a.confidence || a.model) {
+    const why = [a.confidence && `${a.confidence} confidence${a.confidenceReason ? ': ' + a.confidenceReason : ''}`, ev && `${ev} source${ev === 1 ? '' : 's'}`, n && `${n} step${n === 1 ? '' : 's'}`].filter(Boolean).join(' · ');
+    const dot = a.confidence ? '<span class="dot"></span>' : '';
+    items.push(item('how', `${dot}How it was found`, a.confidence ? `conf conf-${a.confidence}` : '', why || 'Answered by ' + a.model));
+  }
   const again = a.fromHistory || a.error ? `<button id="aiAgain" class="mi end" title="Ask this question again with the current code">↻ ${a.error ? 'Try again' : 'Ask again'}</button>` : '';
   if (!items.length && !again) return '';
-  const drawers = { route: renderRoutes, steps: renderSteps, evidence: renderEvidence, conf: a.confidence ? renderConfidence : () => '' };
+  const drawers = { route: renderRoutes, how: renderHow };
   return `<div class="metastrip">${items.join('<span class="sep">·</span>')}${again}</div>${open && drawers[open] ? drawers[open](a) : ''}`;
 }
 
@@ -224,8 +248,10 @@ export function mdLite(text) {
       h = h.replace(/^#{1,4} (.*)$/gm, '<b>$1</b>');
       h = h.replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>');
       h = h.replace(/^\s*\d+\. (.*)$/gm, '<li class="num">$1</li>');
-      h = h.replace(/(<li( class="num")?>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
-      h = h.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
+      // A list carries its own spacing, so no line breaks inside it or hugging it.
+      h = h.replace(/(<li( class="num")?>.*<\/li>\n?)+/g, m => `<ul>${m.replace(/\n/g, '')}</ul>`);
+      h = h.replace(/\s*(<\/?ul>)\s*/g, '$1');
+      h = h.trim().replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
       return h.replace(/\u0000(\d+)\u0000/g, (m, i) => chips[+i]);
     })
     .join('');
@@ -247,9 +273,9 @@ export function renderAnswer() {
   if (a.busy) {
     // While it works: one line for the current step; the full list is one click away.
     const cur = steps[steps.length - 1];
-    const open = a.open === 'steps';
+    const open = a.open === 'how';
     const live = cur
-      ? `<div class="ailive" id="aiLive"><span class="sg">${STEP_GLYPHS[cur.tool] || '•'}</span><span class="st">${esc(cur.summary || cur.tool)}…</span><button class="mi" data-open="steps" aria-expanded="${open}" title="How the AI is investigating">${steps.length} step${steps.length === 1 ? '' : 's'} <span class="car">${open ? '▴' : '▾'}</span></button></div>${open ? renderSteps(a) : ''}`
+      ? `<div class="ailive" id="aiLive"><span class="sg">${STEP_GLYPHS[cur.tool] || '•'}</span><span class="st">${esc(cur.summary || cur.tool)}…</span><button class="mi" data-open="how" aria-expanded="${open}" title="How the AI is investigating">${steps.length} step${steps.length === 1 ? '' : 's'} <span class="car">${open ? '▴' : '▾'}</span></button></div>${open ? renderSteps(a) : ''}`
       : '';
     body = `${live}<div class="a">${a.answer ? mdLite(a.answer) : cur ? '' : '<span class="muted">Thinking…</span>'}</div>`;
   } else body = `<div class="a${a.error ? ' err' : ''}">${a.answer ? mdLite(a.answer) : ''}</div>${renderStrip(a)}`;

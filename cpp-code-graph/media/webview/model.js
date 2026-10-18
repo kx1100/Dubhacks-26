@@ -16,6 +16,8 @@ export const INITIAL_BUDGET = 45;
 export function setGraph(graph, mode, title, compare) {
   const modeChanged = S.mode !== mode || !S.graph;
   const firstLoad = !S.graph;
+  // The AI layer's inferred links are not shown; only its concept tags are.
+  graph = { ...graph, edges: graph.edges.filter(e => e.kind !== 'semantic') };
   S.graph = graph;
   S.mode = mode;
   S.title = title || '';
@@ -384,14 +386,9 @@ export function changedDescendantCounts() {
   return counts;
 }
 
-/** The predicted items, with the AI's blended score and verdict where it checked them, riskiest first. */
+/** The predicted items, riskiest first. */
 export function impactItems(imp) {
-  const verdicts = imp.ai && imp.ai.verdicts;
-  const items = imp.result.items.map(it => {
-    const v = verdicts && verdicts.get(it.id);
-    return v ? { ...it, score: v.score, tier: v.tier, verdict: v } : it;
-  });
-  return verdicts ? items.sort((a, b) => b.score - a.score) : items;
+  return imp.result.items;
 }
 
 /** Visible node -> worst tier of the affected nodes it stands for ('target' for the changed node). */
