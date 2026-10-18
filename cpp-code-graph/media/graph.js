@@ -1,184 +1,47 @@
-// Code Graph webview: renders the graph sent by the extension as a nested,
-// expandable, zoomable SVG diagram. The model, the code-card cache and the
-// shared tables are in webview/; this file holds the SVG renderer, the panels
-// and the wiring until they move out too.
+// SVG renderer: lays out the visible graph as nested, expandable boxes and draws
+// it as a zoomable SVG diagram, with its pointer, wheel and tooltip handling.
+// The model, panels and wiring are in webview/.
 
-import { KIND_INFO, EDGE_KINDS, REL_LABELS, EDGE_VERBS, edgeVerb, EDGE_MODES, EDGE_MODE_INFO, AI_MODES, ROUTE_KINDS, ROUTE_KIND_ORDER, STEP_GLYPHS, PRESETS, SUMMARY_KINDS, IMPACT_KINDS, IMPACT_CHANGES, CHANGE_LABELS, CHANGE_TITLES, VERDICT_LABELS } from './webview/constants.js';
-import { measureCtx, textWidth, esc, push, ago } from './webview/util.js';
+import { $ } from './webview/shell.js';
+import { KIND_INFO, EDGE_KINDS, ROUTE_KIND_ORDER } from './webview/constants.js';
+import { measureCtx, textWidth, esc, push } from './webview/util.js';
 import { vscode, S, persist } from './webview/state.js';
-import { codeSide, codeKey, canShowCode, requestSource, onSource, refreshCode, codeCardHtml } from './webview/code.js';
-import { setGraph, rebuildTree, kids, ancestors, nearestInTree, initialExpansion, applyPresetSettings, presetExpansion, computeVisible, findEdge, nodeLabel, descendantsOf, relatedSets, highlightReps, isDescendant, changedDescendantCounts, impactItems, impactTiers, kidsRaw } from './webview/model.js';
+import { codeSide, codeKey, canShowCode, codeCardHtml } from './webview/code.js';
+import { kids, ancestors, computeVisible, nodeLabel, relatedSets, highlightReps, isDescendant, changedDescendantCounts, impactTiers } from './webview/model.js';
+import { renderHighlightBar } from './webview/panels/toolbar.js';
+import { renderDetails } from './webview/panels/details.js';
+import { tooltipHtml } from './webview/tooltip.js';
+import { toggleCode, toggle, reveal, select, openSource, switchTab } from './webview/main.js';
 
 // ---------------------------------------------------------------------------
 // SVG layout sizes
 
-const CODE_BTN_W = 28;
-const MAX_CODE_LINES = 18; // taller snippets scroll inside the node
-const CODE_LINE_H = 16;
-const CODE_PAD = 8;
-const CODE_MIN_W = 260;
-const CODE_MAX_W = 640;
+export const CODE_BTN_W = 28;
+export const MAX_CODE_LINES = 18; // taller snippets scroll inside the node
+export const CODE_LINE_H = 16;
+export const CODE_PAD = 8;
+export const CODE_MIN_W = 260;
+export const CODE_MAX_W = 640;
 
-const LONG_EDGE = 520; // arrows longer than this (in bundled mode) become stubs with labels
+export const LONG_EDGE = 520; // arrows longer than this (in bundled mode) become stubs with labels
 
-const LEAF_H = 28;
-const HEADER_H = 28;
-const PAD = 14;
-const GAP_X = 28;
-const GAP_Y = 56;
-const MAX_ROW_W = 1500;
-
-// ---------------------------------------------------------------------------
-// DOM
-
-const app = document.getElementById('app');
-app.innerHTML = `
-<header class="toolbar">
-  <div class="title" id="title">Code Graph</div>
-  <div class="search">
-    <input id="search" type="text" placeholder="Search files, classes, functions…  ( / )" spellcheck="false" autocomplete="off">
-    <span id="searchCount" class="count"></span>
-    <button id="searchPrev" class="icon" title="Previous match (Shift+Enter)">↑</button>
-    <button id="searchNext" class="icon" title="Next match (Enter)">↓</button>
-    <div id="searchList" class="popup hidden"></div>
-  </div>
-  <div class="group">
-    <button id="fit" title="Fit graph to view (F)">Fit</button>
-    <button id="expandAll" title="Expand one more level everywhere">Expand</button>
-    <button id="collapseAll" title="Collapse everything to the top level">Collapse</button>
-  </div>
-  <div class="group menu-anchor">
-    <button id="filtersBtn" title="Choose which relationships and nodes to show">Show ▾</button>
-    <div id="filters" class="popup hidden"></div>
-  </div>
-  <div class="group">
-    <label class="toggle" title="Dim everything not connected to the selection"><input type="checkbox" id="focusMode"> Focus</label>
-  </div>
-  <div class="group seg" id="presetSeg" role="group" aria-label="View"><span class="seglabel">View</span></div>
-  <div class="group seg" id="edgeSeg" role="group" aria-label="Arrows"><span class="seglabel">Arrows</span></div>
-  <div class="spacer"></div>
-  <div class="group">
-    <button id="compareBtn" title="Compare two git commits">Compare commits</button>
-    <button id="refreshBtn" title="Rescan the workspace">⟳</button>
-  </div>
-</header>
-<div id="banner" class="banner hidden"></div>
-<div class="main">
-  <div class="canvas" id="canvas">
-    <svg id="svg" tabindex="0">
-      <defs id="defs"></defs>
-      <g id="viewport">
-        <g id="layerContainers"></g>
-        <g id="layerEdges"></g>
-        <g id="layerPath"></g>
-        <g id="layerNodes"></g>
-        <g id="layerBadges"></g>
-      </g>
-    </svg>
-    <div id="hlBar" class="hlbar hidden"></div>
-    <div id="edgeHint" class="edgehint hidden">Select a node to see its connections, or choose <b>Bundled</b> / <b>All</b> under Arrows.</div>
-    <div id="empty" class="empty hidden"></div>
-    <div class="zoom">
-      <button id="zoomIn" title="Zoom in">+</button>
-      <button id="zoomOut" title="Zoom out">−</button>
-    </div>
-    <div id="legend" class="legend"></div>
-    <div id="tooltip" class="tooltip hidden"></div>
-  </div>
-  <aside class="side">
-    <div class="tabs">
-      <button data-tab="details" class="active">Details</button>
-      <button data-tab="ai">Ask AI</button>
-      <button data-tab="impact">Impact</button>
-    </div>
-    <div id="tab-details" class="tabbody"></div>
-    <div id="tab-impact" class="tabbody hidden"></div>
-    <div id="tab-ai" class="tabbody hidden">
-      <div class="ask">
-        <textarea id="question" rows="2" placeholder="Ask about the code…  (Ctrl+Enter)"></textarea>
-        <div class="aiopts" id="aiOpts"></div>
-        <div id="suggestions" class="suggestions"></div>
-      </div>
-      <div id="history" class="histpop hidden"></div>
-      <div id="answer" class="answer"></div>
-    </div>
-  </aside>
-</div>
-<footer class="status"><span id="spinner" class="spinner hidden"></span><span id="status">Loading…</span><span class="spacer"></span><span id="stats"></span></footer>`;
-
-const $ = id => document.getElementById(id);
-const svg = $('svg');
-const viewport = $('viewport');
-const canvasEl = $('canvas');
+export const LEAF_H = 28;
+export const HEADER_H = 28;
+export const PAD = 14;
+export const GAP_X = 28;
+export const GAP_Y = 56;
+export const MAX_ROW_W = 1500;
 
 // ---------------------------------------------------------------------------
-// Loading a graph
+// Canvas elements
 
-function loadGraph(graph, mode, title, compare) {
-  const fresh = setGraph(graph, mode, title, compare);
-  $('title').textContent = S.title || 'Code Graph';
-  $('title').title = S.title;
-  refreshCode();
-  renderBanner();
-  renderFilters();
-  renderViewControls();
-  renderStats();
-  layoutAndRender(fresh ? 'fit' : S.view ? null : 'fit');
-  renderDetails();
-  setStatus(mode === 'diff' ? 'Comparison ready. Green = added, red = removed, yellow = modified.' : 'Ready. Double-click a node to expand it, Ctrl+click to open its source.');
-}
+export const svg = $('svg');
+export const viewport = $('viewport');
+export const canvasEl = $('canvas');
 
-// ---------------------------------------------------------------------------
-// View presets
 
-function applyPreset(name) {
-  if (!PRESETS[name]) return;
-  S.preset = name;
-  S.highlight = null;
-  applyPresetSettings(name);
-  for (const id of [...S.codeOpen]) S.codeOpen.delete(id);
-  rebuildTree();
-  presetExpansion(name);
-  persist();
-  renderFilters();
-  renderViewControls();
-  layoutAndRender('fit');
-  setStatus(PRESETS[name].desc);
-}
 
-function markCustom() {
-  // Changing a filter by hand means the view no longer matches its preset.
-  if (S.preset === 'custom') return;
-  S.preset = 'custom';
-  renderViewControls();
-}
 
-function setEdgeMode(mode) {
-  if (!EDGE_MODES.includes(mode)) return;
-  S.edgeMode = mode;
-  persist();
-  renderViewControls();
-  render();
-}
-
-function renderViewControls() {
-  const seg = (el, items, current, attr) => {
-    for (const b of [...el.querySelectorAll('button')]) b.remove();
-    for (const [value, label, title] of items) {
-      const b = document.createElement('button');
-      b.textContent = label;
-      b.title = title;
-      b.dataset[attr] = value;
-      b.setAttribute('aria-pressed', String(value === current));
-      b.classList.toggle('active', value === current);
-      el.appendChild(b);
-    }
-  };
-  seg($('presetSeg'), Object.entries(PRESETS).map(([k, p]) => [k, p.label, p.desc]).concat(S.preset === 'custom' ? [['custom', 'Custom', 'Filters changed by hand under Show']] : []), S.preset, 'preset');
-  seg($('edgeSeg'), EDGE_MODES.map(m => [m, m[0].toUpperCase() + m.slice(1), EDGE_MODE_INFO[m]]), S.edgeMode, 'edgemode');
-  $('presetSeg').querySelectorAll('button').forEach(b => (b.onclick = () => (b.dataset.preset === 'custom' ? null : applyPreset(b.dataset.preset))));
-  $('edgeSeg').querySelectorAll('button').forEach(b => (b.onclick = () => setEdgeMode(b.dataset.edgemode)));
-}
 
 // ---------------------------------------------------------------------------
 // Inline code: a node can be opened into a card showing its source (the text
@@ -186,22 +49,8 @@ function renderViewControls() {
 
 let monoW = 0;
 
-function toggleCode(id, force) {
-  const n = S.nodes.get(id);
-  if (!canShowCode(n)) return;
-  const open = force !== undefined ? force : !S.codeOpen.has(id);
-  if (open) {
-    // A node is either expanded (its children) or showing its code, not both.
-    S.expanded.delete(id);
-    for (const d of descendantsOf(id)) S.expanded.delete(d);
-    S.codeOpen.add(id);
-    requestSource(n);
-  } else S.codeOpen.delete(id);
-  persist();
-  relayoutKeeping(id);
-}
 
-function codeSize(n, labelW) {
+export function codeSize(n, labelW) {
   const e = S.code.get(codeKey(n));
   const lines = e && e.lines ? e.lines : [e && e.status === 'error' ? e.error || 'Source unavailable' : 'Loading…'];
   if (!monoW) {
@@ -221,7 +70,7 @@ function codeSize(n, labelW) {
 // with a small layered (Sugiyama-style) algorithm based on the edges between
 // them. Siblings without connections are packed in a grid.
 
-function computeLayout(vis) {
+export function computeLayout(vis) {
   const box = new Map(); // id -> {w, h, x, y (relative to parent content), container}
   const visibleSet = new Set(vis.visible);
 
@@ -281,7 +130,7 @@ function computeLayout(vis) {
   return { abs, width: top.w, height: top.h };
 }
 
-function layered(ids, pairs, box) {
+export function layered(ids, pairs, box) {
   // Left to right is the top-down layout run on boxes turned on their side:
   // ranks become columns and siblings stack vertically. It is used between
   // folders and files, where the flow of calls matters; inside a file the
@@ -302,7 +151,7 @@ function layered(ids, pairs, box) {
   return { w: res.h, h: res.w };
 }
 
-function sidewaysAmong(ids) {
+export function sidewaysAmong(ids) {
   // True when siblings are laid out left to right: a left-to-right view and all of them folders or files.
   return S.direction === 'LR' && ids.length > 0 && ids.every(id => {
     const k = (S.nodes.get(id) || {}).kind;
@@ -310,7 +159,7 @@ function sidewaysAmong(ids) {
   });
 }
 
-function layeredTopDown(ids, pairs, box) {
+export function layeredTopDown(ids, pairs, box) {
   // Sets box.get(id).x/y relative to the content origin; returns {w, h}.
   if (!ids.length) return { w: 0, h: 0 };
   const index = new Map(ids.map((id, i) => [id, i]));
@@ -493,7 +342,7 @@ function layeredTopDown(ids, pairs, box) {
 // ---------------------------------------------------------------------------
 // Rendering
 
-function layoutAndRender(viewAction) {
+export function layoutAndRender(viewAction) {
   // Expanding a node (for example via Expand all) wins over showing its code.
   for (const id of [...S.codeOpen]) if (S.expanded.has(id)) S.codeOpen.delete(id);
   const vis = computeVisible();
@@ -513,7 +362,7 @@ function layoutAndRender(viewAction) {
   } else empty.classList.add('hidden');
 }
 
-function edgeMarkers() {
+export function edgeMarkers() {
   let s = '';
   for (const k of EDGE_KINDS) {
     const hollow = k.kind === 'inherits';
@@ -525,7 +374,7 @@ function edgeMarkers() {
   $('defs').innerHTML = s;
 }
 
-function clipToBox(cx, cy, tx, ty, b) {
+export function clipToBox(cx, cy, tx, ty, b) {
   // Point where the segment from the box center (cx,cy) toward (tx,ty) leaves box b.
   const dx = tx - cx;
   const dy = ty - cy;
@@ -538,7 +387,7 @@ function clipToBox(cx, cy, tx, ty, b) {
   return [cx + dx * s, cy + dy * s];
 }
 
-function anchor(b) {
+export function anchor(b) {
   // Containers and code cards connect at their header so arrows do not cross their content.
   if (b.container || b.code) {
     const header = { x: b.x, y: b.y, w: b.w, h: HEADER_H };
@@ -547,7 +396,7 @@ function anchor(b) {
   return { cx: b.x + b.w / 2, cy: b.y + b.h / 2, box: b };
 }
 
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+export const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 /**
  * Path of an arrow between two boxes. Arrows leave and enter through the side
@@ -556,7 +405,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
  * instead of running from centre to centre.
  * Returns {d, x1, y1, x2, y2, mx, my, len}: path, end points, mid point and length.
  */
-function edgeGeometry(e, abs, bend) {
+export function edgeGeometry(e, abs, bend) {
   const A = abs.get(e.s);
   const B = abs.get(e.t);
   if (!A || !B) return null;
@@ -622,7 +471,7 @@ function edgeGeometry(e, abs, bend) {
  * source, one entering the target), each ending in a label naming the other end.
  * Clicking a label jumps to that end (data-badge).
  */
-function edgeStubs(e, g, cls, width) {
+export function edgeStubs(e, g, cls, width) {
   const STUB = 30;
   const H = 20;
   const name = id => nodeLabel(S.nodes.get(id) || {});
@@ -648,7 +497,7 @@ function edgeStubs(e, g, cls, width) {
   };
 }
 
-function render() {
+export function render() {
   edgeMarkers();
   const { vis, abs } = S.layout;
   const related = relatedSets();
@@ -789,7 +638,7 @@ function render() {
   renderHighlightBar();
 }
 
-function renderPath() {
+export function renderPath() {
   // Numbered execution path (from the AI answer or a trace).
   const layer = $('layerPath');
   if (!S.highlight || !S.highlight.path || S.highlight.path.length < 1) {
@@ -840,7 +689,7 @@ function renderPath() {
   layer.innerHTML = s + labels;
 }
 
-function hopTitle(hop) {
+export function hopTitle(hop) {
   if (hop.inferred) return 'Inferred: there is no call between these steps in the graph';
   if (hop.returns) return 'Returns to the caller';
   if (hop.dispatch) return 'Virtual dispatch: the call goes to a base method this one overrides';
@@ -851,13 +700,13 @@ function hopTitle(hop) {
 // ---------------------------------------------------------------------------
 // View transform
 
-function applyView() {
+export function applyView() {
   const v = S.view;
   viewport.setAttribute('transform', `translate(${v.x},${v.y}) scale(${v.k})`);
   canvasEl.classList.toggle('far', v.k < 0.45);
 }
 
-function fitView(animate) {
+export function fitView(animate) {
   const rect = svg.getBoundingClientRect();
   const W = rect.width || 800;
   const H = rect.height || 600;
@@ -867,7 +716,7 @@ function fitView(animate) {
   setView(target, animate);
 }
 
-function setView(target, animate) {
+export function setView(target, animate) {
   if (!animate || !S.view) {
     S.view = target;
     applyView();
@@ -887,7 +736,7 @@ function setView(target, animate) {
   requestAnimationFrame(step);
 }
 
-function centerOn(id, animate) {
+export function centerOn(id, animate) {
   const b = S.layout.abs.get(id);
   if (!b) return;
   const rect = svg.getBoundingClientRect();
@@ -897,7 +746,7 @@ function centerOn(id, animate) {
   setView({ k, x: rect.width / 2 - (b.x + b.w / 2) * k, y: rect.height / 2 - (b.y + Math.min(b.h, 200) / 2) * k }, animate);
 }
 
-function zoomAt(factor, px, py) {
+export function zoomAt(factor, px, py) {
   const v = S.view;
   const k = Math.min(4, Math.max(0.04, v.k * factor));
   const f = k / v.k;
@@ -906,28 +755,7 @@ function zoomAt(factor, px, py) {
   persist();
 }
 
-// ---------------------------------------------------------------------------
-// Actions
-
-function toggle(id, force) {
-  if (!kids(id).length) return;
-  const open = force !== undefined ? force : !S.expanded.has(id);
-  if (open) S.expanded.add(id);
-  else {
-    S.expanded.delete(id);
-    // Collapsing also collapses descendants, so re-expanding starts clean.
-    const stack = [...kids(id)];
-    while (stack.length) {
-      const c = stack.pop();
-      S.expanded.delete(c);
-      stack.push(...kids(c));
-    }
-  }
-  persist();
-  relayoutKeeping(id);
-}
-
-function relayoutKeeping(anchorId) {
+export function relayoutKeeping(anchorId) {
   // Re-layout while keeping the anchor node at the same screen position.
   const before = anchorId && S.layout && S.layout.abs.get(anchorId);
   layoutAndRender(null);
@@ -940,1349 +768,36 @@ function relayoutKeeping(anchorId) {
   }
 }
 
-function reveal(id, opts) {
-  // Expand ancestors so that id becomes visible, select it and center on it.
-  let target = nearestInTree(id);
-  if (!target) {
-    // Hidden by the "changes only" filter or a kind filter; relax filters.
-    if (S.mode === 'diff' && S.changesOnly) {
-      S.changesOnly = false;
-      rebuildTree();
-      renderBanner();
-    }
-    target = nearestInTree(id);
-    if (!target) return;
-  }
-  for (const a of ancestors(target)) S.expanded.add(a);
-  S.selected = target;
-  S.selectedEdge = null;
-  persist();
-  layoutAndRender(null);
-  if (!opts || opts.center !== false) centerOn(target, true);
-  renderDetails();
-  switchTab('details', true);
-}
-
-function select(id) {
-  S.selected = id;
-  S.selectedEdge = null;
-  persist();
-  render();
-  renderDetails();
-}
-
-function openSource(id, which) {
-  const n = S.nodes.get(id);
-  if (!n || !n.file) return;
-  const useDef = which !== 'decl' && n.defFile;
-  // Free functions keep their definition as the node and remember where the prototype is.
-  const useProto = which === 'decl' && n.declFile;
-  const file = useProto ? n.declFile : useDef ? n.defFile : n.file;
-  const line = useProto ? n.declLine : useDef ? n.defLine : n.line;
-  vscode.postMessage({ type: 'open', file, line: line || 1, side: n.status === 'removed' ? 'base' : 'target' });
-}
-
-function expandLevel() {
-  // Expand every visible collapsed node by one level.
-  const { visible } = S.vis;
-  let added = 0;
-  for (const id of visible) {
-    if (!S.expanded.has(id) && kids(id).length) {
-      S.expanded.add(id);
-      added++;
-    }
-  }
-  if (added) {
-    persist();
-    layoutAndRender('fit');
-  }
-}
-
-function collapseAll() {
-  S.expanded = new Set();
-  if (S.roots.length === 1) S.expanded.add(S.roots[0]);
-  persist();
-  layoutAndRender('fit');
-}
-
-/**
- * Collapses everything except the neighbourhood of a node: the node itself, the
- * nodes it is connected to (through the arrows currently enabled) and the
- * folders and files that lead to them. Lets you study one area of a big graph.
- */
-function focusArea(id) {
-  const target = nearestInTree(id);
-  if (!target) return;
-  const inside = [id];
-  const sub = descendantsOf(id);
-  if (sub.length <= 300) inside.push(...sub);
-  const insideSet = new Set(inside);
-  const keep = new Set([target]);
-  for (const u of inside) {
-    for (const e of S.out.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.t)) keep.add(nearestInTree(e.t));
-    for (const e of S.inc.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.s)) keep.add(nearestInTree(e.s));
-  }
-  const wasOpen = S.expanded.has(target);
-  S.expanded = new Set();
-  for (const k of keep) if (k) for (const a of ancestors(k)) S.expanded.add(a);
-  if (wasOpen) S.expanded.add(target);
-  S.codeOpen.delete(target);
-  S.selected = target;
-  S.selectedEdge = null;
-  persist();
-  layoutAndRender('fit');
-  centerOn(target, false);
-  renderDetails();
-  setStatus('Showing only what is connected to ' + nodeLabel(S.nodes.get(target)) + '. Use Expand or Collapse to change this.');
-}
-
-function trace(id, direction) {
-  // Highlight everything reachable through call edges (callees or callers).
-  const seen = new Set([id]);
-  const order = [id];
-  let frontier = [id];
-  for (let depth = 0; depth < 12 && frontier.length; depth++) {
-    const next = [];
-    for (const u of frontier) {
-      const list = direction === 'out' ? S.out.get(u) : S.inc.get(u);
-      for (const e of list || []) {
-        if (e.kind !== 'calls' && e.kind !== 'overrides') continue;
-        const v = direction === 'out' ? e.t : e.s;
-        if (!seen.has(v)) {
-          seen.add(v);
-          order.push(v);
-          next.push(v);
-        }
-      }
-    }
-    frontier = next;
-  }
-  const n = S.nodes.get(id);
-  setHighlight({ ids: seen, path: [], label: (direction === 'out' ? 'Everything called from ' : 'Everything that calls ') + n.name + ' (' + (seen.size - 1) + ')' });
-}
-
-function setHighlight(h) {
-  S.highlight = h && h.ids.size ? h : null;
-  render();
-}
-
-function revealAll(ids) {
-  let count = 0;
-  for (const id of ids) {
-    const t = nearestInTree(id);
-    if (!t) continue;
-    for (const a of ancestors(t)) S.expanded.add(a);
-    if (++count > 200) break;
-  }
-  persist();
-  layoutAndRender('fit');
-}
 
 // ---------------------------------------------------------------------------
 // Toolbar, banner, filters, legend, status
 
-function renderBanner() {
-  const el = $('banner');
-  if (S.mode !== 'diff') {
-    el.classList.add('hidden');
-    return;
-  }
-  const d = (S.graph.stats && S.graph.stats.diff) || { nodes: {}, edges: {} };
-  el.classList.remove('hidden');
-  el.innerHTML = `<span class="b-title">Comparing <b>${esc(S.compare ? S.compare.baseLabel : '')}</b> → <b>${esc(S.compare ? S.compare.targetLabel : '')}</b></span>
-    <span class="pill st-added">+${d.nodes.added || 0} added</span>
-    <span class="pill st-removed">−${d.nodes.removed || 0} removed</span>
-    <span class="pill st-modified">~${d.nodes.modified || 0} modified</span>
-    <span class="muted">relationships: +${d.edges.added || 0} / −${d.edges.removed || 0}</span>
-    <span class="spacer"></span>
-    <label class="toggle"><input type="checkbox" id="changesOnly" ${S.changesOnly ? 'checked' : ''}> Changes only</label>
-    <button id="exitCompare">Exit comparison</button>`;
-  $('changesOnly').onchange = ev => {
-    S.changesOnly = ev.target.checked;
-    rebuildTree();
-    initialExpansion();
-    layoutAndRender('fit');
-  };
-  $('exitCompare').onclick = () => {
-    setStatus('Switching back to the workspace…', true);
-    vscode.postMessage({ type: 'exitCompare' });
-  };
-}
-
-function renderFilters() {
-  const el = $('filters');
-  el.innerHTML =
-    '<div class="ph">Relationships</div>' +
-    EDGE_KINDS.map(k => `<label class="row" title="${esc(k.desc)}"><input type="checkbox" data-edge-kind="${k.kind}" ${S.edgeOn[k.kind] ? 'checked' : ''}><svg width="26" height="10"><line x1="1" y1="5" x2="24" y2="5" class="legend-line ek-${k.kind}"/></svg>${esc(k.label)}</label>`).join('') +
-    `<label class="row" title="Calls whose target could not be determined exactly"><input type="checkbox" id="fUncertain" ${S.showUncertain ? 'checked' : ''}> Include uncertain calls</label>` +
-    '<div class="ph">Nodes</div>' +
-    `<label class="row"><input type="checkbox" id="fFields" ${S.showFields ? 'checked' : ''}> Fields &amp; global variables</label>` +
-    `<label class="row"><input type="checkbox" id="fNs" ${S.showNamespaces ? 'checked' : ''}> Namespaces</label>`;
-  el.querySelectorAll('[data-edge-kind]').forEach(cb => {
-    cb.onchange = () => {
-      S.edgeOn[cb.dataset.edgeKind] = cb.checked;
-      markCustom();
-      persist();
-      layoutAndRender(null);
-      renderLegend();
-    };
-  });
-  $('fUncertain').onchange = ev => {
-    S.showUncertain = ev.target.checked;
-    markCustom();
-    persist();
-    layoutAndRender(null);
-  };
-  $('fFields').onchange = ev => {
-    S.showFields = ev.target.checked;
-    markCustom();
-    persist();
-    rebuildTree();
-    layoutAndRender(null);
-  };
-  $('fNs').onchange = ev => {
-    S.showNamespaces = ev.target.checked;
-    markCustom();
-    persist();
-    rebuildTree();
-    layoutAndRender(null);
-  };
-  renderLegend();
-}
-
-function renderLegend() {
-  const el = $('legend');
-  const edges = EDGE_KINDS.filter(k => S.edgeOn[k.kind])
-    .map(k => `<div class="lrow"><svg width="30" height="10"><line x1="1" y1="5" x2="22" y2="5" class="legend-line ek-${k.kind}"/><path d="M22,1 L29,5 L22,9 z" class="arrowhead ek-${k.kind}${k.kind === 'inherits' ? ' hollow' : ''}"/></svg>${esc(k.label)}</div>`)
-    .join('');
-  const kindsShown = ['file', 'class', 'struct', 'function', 'method', 'enum', 'namespace', 'field'];
-  const nodes = kindsShown.map(k => `<span class="lnode k-${k}"><span class="g">${KIND_INFO[k].glyph}</span>${KIND_INFO[k].label}</span>`).join('');
-  const diff = S.mode === 'diff' ? '<div class="lrow"><span class="lnode st-added">added</span><span class="lnode st-removed">removed</span><span class="lnode st-modified">modified</span></div>' : '';
-  el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div>${diff}<div class="hint">Dashed = uncertain call · double-click to expand · &lt;/&gt; shows code · Ctrl+click opens source</div></div>`;
-  $('legendToggle').onclick = () => {
-    el.classList.toggle('collapsed');
-    renderLegend();
-  };
-}
-
-function renderStats() {
-  const st = S.graph.stats || {};
-  const errs = st.errors && st.errors.length ? ` · ${st.errors.length} parse errors` : '';
-  $('stats').textContent = `${st.files || 0} files · ${S.graph.nodes.length} nodes · ${S.graph.edges.length} relationships${errs}`;
-  $('stats').title = st.errors && st.errors.length ? st.errors.map(e => e.file).join('\n') : '';
-}
-
-function setStatus(text, busy, error) {
-  $('status').textContent = text;
-  $('status').classList.toggle('error', !!error);
-  $('spinner').classList.toggle('hidden', !busy);
-}
-
-function renderHighlightBar() {
-  syncAiToggle();
-  syncImpactToggle();
-  const el = $('hlBar');
-  if (!S.highlight) {
-    el.classList.add('hidden');
-    return;
-  }
-  el.classList.remove('hidden');
-  const hidden = [...S.highlight.ids].filter(id => {
-    const r = S.vis.repOf(id);
-    return r && r !== id;
-  }).length;
-  el.innerHTML = `<span>${esc(S.highlight.label)}</span>${hidden ? `<button id="hlReveal" title="Expand the graph so every highlighted node is visible">Reveal ${hidden} hidden</button>` : ''}<button id="hlClear" title="Clear highlight (Esc)">✕</button>`;
-  if ($('hlReveal')) $('hlReveal').onclick = () => revealAll(S.highlight.ids);
-  $('hlClear').onclick = () => setHighlight(null);
-}
 
 // ---------------------------------------------------------------------------
 // Details panel
 
-function nodeChip(id, extra) {
-  const n = S.nodes.get(id);
-  if (!n) return `<span class="chip missing">${esc(id)}</span>`;
-  const info = KIND_INFO[n.kind] || { glyph: '?' };
-  const owner = n.kind === 'method' || n.kind === 'field' ? (S.nodes.get(n.parent) || {}).name : null;
-  const label = (owner ? owner + '::' : '') + n.name;
-  return `<a class="chip k-${n.kind}${n.status ? ' st-' + n.status : ''}" data-goto="${esc(id)}" title="${esc(n.qname || n.file || n.name)}"><span class="g">${info.glyph}</span>${esc(label)}${extra || ''}</a>`;
-}
-
-function locLink(file, line, side, label) {
-  return `<a class="loc" data-open-file="${esc(file)}" data-open-line="${line || 1}" data-side="${side || 'target'}">${esc(label || file + ':' + (line || 1))}</a>`;
-}
-
-function relationSection(title, edges, endpoint) {
-  if (!edges.length) return '';
-  const seen = new Map();
-  for (const e of edges) {
-    const other = endpoint === 't' ? e.t : e.s;
-    const cur = seen.get(other);
-    if (!cur) seen.set(other, { e, n: e.n || 1, uncertain: e.uncertain, status: e.status });
-    else {
-      cur.n += e.n || 1;
-      cur.uncertain = cur.uncertain && e.uncertain;
-    }
-  }
-  const items = [...seen.entries()].sort((a, b) => (S.nodes.get(a[0]) || {}).name.localeCompare((S.nodes.get(b[0]) || {}).name));
-  const shown = items.slice(0, 80);
-  const html = shown
-    .map(([other, info]) => {
-      const site = info.e.sites && info.e.sites[0];
-      const extra = (info.n > 1 ? ` <span class="muted">×${info.n}</span>` : '') + (info.uncertain ? ' <span class="muted" title="Target is a best guess">?</span>' : '');
-      const st = info.status ? ` <span class="pill sm st-${info.status}">${info.status}</span>` : '';
-      const siteLink = site ? ` <a class="site" title="Go to ${esc(site.file + ':' + site.line)}" data-open-file="${esc(site.file)}" data-open-line="${site.line}" data-side="${info.status === 'removed' ? 'base' : 'target'}">↗</a>` : '';
-      return `<li>${nodeChip(other, extra)}${st}${siteLink}</li>`;
-    })
-    .join('');
-  const more = items.length > shown.length ? `<li class="muted">… and ${items.length - shown.length} more</li>` : '';
-  return `<details open><summary>${esc(title)} <span class="muted">${items.length}</span></summary><ul class="rel">${html}${more}</ul></details>`;
-}
-
-function describeNode(n) {
-  // Plain-language summary for newcomers.
-  const kids_ = (S.children.get(n.id) || []).map(id => S.nodes.get(id));
-  const count = k => kids_.filter(c => c.kind === k).length;
-  const out = S.out.get(n.id) || [];
-  const inc = S.inc.get(n.id) || [];
-  const calls = new Set(out.filter(e => e.kind === 'calls').map(e => e.t)).size;
-  const callers = new Set(inc.filter(e => e.kind === 'calls').map(e => e.s)).size;
-  switch (n.kind) {
-    case 'dir':
-      return `A folder with ${kids_.length} item${kids_.length === 1 ? '' : 's'}.`;
-    case 'file': {
-      const inclBy = inc.filter(e => e.kind === 'includes').length;
-      let s = `${n.header ? 'A header file' : 'A source file'} defining ${kids_.length} top-level item${kids_.length === 1 ? '' : 's'}${n.header ? `, included by ${inclBy} file${inclBy === 1 ? '' : 's'}` : ''}.`;
-      const impl = out.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.t) || {}).name).filter(Boolean);
-      const decl = inc.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.s) || {}).name).filter(Boolean);
-      if (impl.length) s += ` Its declarations are implemented in ${impl.map(esc).join(', ')}.`;
-      if (decl.length) s += ` It implements declarations from ${decl.map(esc).join(', ')}.`;
-      return s;
-    }
-    case 'class':
-    case 'struct':
-    case 'union': {
-      const bases = out.filter(e => e.kind === 'inherits').length;
-      const derived = inc.filter(e => e.kind === 'inherits').length;
-      const parts = [`${count('method')} method${count('method') === 1 ? '' : 's'}`, `${count('field')} field${count('field') === 1 ? '' : 's'}`];
-      let s = `A ${n.kind} with ${parts.join(' and ')}.`;
-      if (bases) s += ` It derives from ${bases} base class${bases === 1 ? '' : 'es'}.`;
-      if (derived) s += ` ${derived} class${derived === 1 ? ' derives' : 'es derive'} from it.`;
-      return s;
-    }
-    case 'function':
-    case 'method': {
-      let s = n.kind === 'method' ? `A ${n.isPure ? 'pure virtual ' : n.isVirtual ? 'virtual ' : n.isStatic ? 'static ' : ''}member function of ${esc((S.nodes.get(n.parent) || {}).name || '?')}.` : `A ${n.isStatic ? 'file-local (static) ' : ''}free function.`;
-      if (n.name === 'main') s += ' This is the program entry point.';
-      s += ` It calls ${calls} known function${calls === 1 ? '' : 's'} and is called from ${callers} place${callers === 1 ? '' : 's'} in this codebase.`;
-      if (!n.defFile && n.kind === 'method') s += ' No definition was found (declared only, defaulted, or defined elsewhere).';
-      return s;
-    }
-    case 'enum':
-      return `An enumeration${n.values && n.values.length ? ' with values ' + n.values.slice(0, 8).map(esc).join(', ') + (n.values.length > 8 ? ', …' : '') : ''}.`;
-    case 'namespace':
-      return `A namespace block containing ${kids_.length} item${kids_.length === 1 ? '' : 's'}.`;
-    case 'field':
-      return `A data member of ${esc((S.nodes.get(n.parent) || {}).name || '?')}.`;
-    case 'variable':
-      return 'A global (namespace-scope) variable.';
-  }
-  return '';
-}
-
-function renderDetails() {
-  // The Ask AI composer offers the selection as context.
-  renderOpts();
-  renderSuggestions();
-  const el = $('tab-details');
-  if (S.selectedEdge && S.layout) {
-    const e = findEdge(S.selectedEdge);
-    if (e) return renderEdgeDetails(el, e);
-  }
-  const n = S.selected && S.nodes.get(S.selected);
-  if (!n) {
-    el.innerHTML = `<div class="intro">
-      <h3>Explore the code</h3>
-      <ul>
-        <li><b>Click</b> a node to see what it is and how it connects.</li>
-        <li><b>Double-click</b> (or press <kbd>+</kbd>) to look inside a folder, file or class.</li>
-        <li><b>Ctrl+click</b> to jump to its source.</li>
-        <li>Arrows show <b>calls</b>, <b>includes</b>, <b>inheritance</b> and more — choose them under <b>Show ▾</b>.</li>
-        <li>Scroll to zoom, drag the background to pan, <kbd>/</kbd> to search.</li>
-      </ul>
-      ${entryPoints()}
-      ${semanticIntro()}
-    </div>`;
-    bindLinks(el);
-    bindConcepts(el);
-    if ($('semBuild')) $('semBuild').onclick = () => vscode.postMessage({ type: 'buildSemantic' });
-    return;
-  }
-  const info = KIND_INFO[n.kind] || { label: n.kind, glyph: '?' };
-  const out = S.out.get(n.id) || [];
-  const inc = S.inc.get(n.id) || [];
-  const byKind = (list, k) => list.filter(e => e.kind === k);
-  const side = n.status === 'removed' ? 'base' : 'target';
-  let locs = '';
-  if (n.file && n.kind !== 'dir') {
-    if (n.declFile) {
-      locs += `<div class="kv"><span>Declared</span>${locLink(n.declFile, n.declLine, side)}</div><div class="kv"><span>Defined</span>${locLink(n.defFile || n.file, n.defLine || n.line, side)}</div>`;
-    } else if (n.defFile && (n.defFile !== n.file || n.defLine !== n.line)) {
-      locs += `<div class="kv"><span>Declared</span>${locLink(n.file, n.line, side)}</div><div class="kv"><span>Defined</span>${locLink(n.defFile, n.defLine, side)}</div>`;
-    } else locs += `<div class="kv"><span>Location</span>${locLink(n.file, n.line, side)}</div>`;
-  }
-  const children = kids(n.id);
-  const members = children.length
-    ? `<details ${children.length <= 40 ? 'open' : ''}><summary>Contains <span class="muted">${children.length}</span></summary><ul class="rel">${children
-        .slice(0, 150)
-        .map(c => `<li>${nodeChip(c)}</li>`)
-        .join('')}${children.length > 150 ? `<li class="muted">… and ${children.length - 150} more</li>` : ''}</ul></details>`
-    : '';
-  let rels = '';
-  for (const k of ['calls', 'inherits', 'overrides', 'includes', 'uses', 'pairs']) {
-    rels += relationSection(REL_LABELS[k][0], byKind(out, k), 't');
-    rels += relationSection(REL_LABELS[k][1], byKind(inc, k), 's');
-  }
-  rels += semanticSection(n.id, out, inc);
-  if (n.kind === 'file' || n.kind === 'dir' || n.kind === 'namespace' || n.kind === 'class' || n.kind === 'struct') rels += aggregatedDeps(n.id);
-  const isFn = n.kind === 'function' || n.kind === 'method';
-  const status = n.status ? `<span class="pill st-${n.status}">${n.status}</span>` : '';
-  el.innerHTML = `
-    <div class="dhead k-${n.kind}"><span class="g big">${info.glyph}</span><div><div class="dname">${esc(n.name)} ${status}</div><div class="muted">${esc(info.label)}${n.access ? ' · ' + esc(n.access) : ''}${n.isVirtual ? ' · virtual' : ''}${n.isStatic ? ' · static' : ''}</div></div></div>
-    ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
-    ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
-    ${summaryBlock(n)}
-    ${conceptPills(n.id)}
-    <p class="desc">${describeNode(n)}</p>
-    ${locs}
-    <div class="actions">
-      ${n.file ? '<button data-act="open" class="primary">Open source</button>' : ''}
-      ${(n.defFile && n.file && n.defFile !== n.file) || n.declFile ? '<button data-act="openDecl">Declaration</button>' : ''}
-      ${canShowCode(n) ? `<button data-act="code" title="Show or hide the source inside the graph node (C)">${S.codeOpen.has(n.id) ? 'Hide code' : 'View code'}</button>` : ''}
-      ${children.length ? `<button data-act="toggle">${S.expanded.has(n.id) ? 'Collapse' : 'Expand'}</button>` : ''}
-      ${isFn ? '<button data-act="callees" title="Highlight everything this function calls, directly or indirectly">Trace callees</button><button data-act="callers" title="Highlight everything that leads to this function">Trace callers</button>' : ''}
-      <button data-act="center">Center</button>
-      <button data-act="focusArea" title="Collapse everything except this node and what it is connected to (O)">Collapse others</button>
-      <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
-      ${isFn ? '<button data-act="tracePath" title="Ask the AI to reconstruct the execution path starting at this function">Trace path with AI</button>' : ''}
-      ${IMPACT_KINDS.has(n.kind) && n.status !== 'removed' ? '<button data-act="impact" title="Predict what else may need to change if you change this">What if I change this?</button>' : ''}
-      ${S.mode === 'diff' && n.kind === 'file' && n.status === 'modified' ? '<button data-act="diff">Show file diff</button>' : ''}
-    </div>
-    ${members}
-    ${rels || (children.length ? '' : '<p class="muted">No relationships found.</p>')}`;
-  el.querySelectorAll('[data-act]').forEach(b => {
-    b.onclick = () => {
-      const act = b.dataset.act;
-      if (act === 'open') openSource(n.id);
-      else if (act === 'openDecl') openSource(n.id, 'decl');
-      else if (act === 'code') {
-        toggleCode(n.id);
-        renderDetails();
-      } else if (act === 'toggle') {
-        toggle(n.id);
-        renderDetails();
-      } else if (act === 'callees') trace(n.id, 'out');
-      else if (act === 'callers') trace(n.id, 'in');
-      else if (act === 'center') centerOn(nearestInTree(n.id) || n.id, true);
-      else if (act === 'focusArea') focusArea(n.id);
-      else if (act === 'diff') vscode.postMessage({ type: 'openDiff', file: n.file });
-      else if (act === 'impact') openImpact(n.id);
-      else if (act === 'tracePath') {
-        switchTab('ai');
-        S.aiMode = 'path';
-        persist();
-        ask(`What happens when ${n.qname || n.name} runs?`, 'path', n.id);
-      } else if (act === 'explain') {
-        switchTab('ai');
-        ask(`Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask');
-      }
-    };
-  });
-  bindLinks(el);
-  bindConcepts(el);
-  bindSummary(n);
-  scheduleSummary(n);
-}
 
 // AI summary of the selected node (see src/ai/summaries.js). Requested a moment
 // after selection, so clicking through nodes doesn't ask for each of them.
-let summaryTimer = null;
-
-function wantsSummary(n) {
-  return !!n && SUMMARY_KINDS.has(n.kind) && n.status !== 'removed';
-}
-
-function summaryBlock(n) {
-  if (!wantsSummary(n)) return '';
-  const e = S.summaries.get(n.id);
-  if (e && (e.status === 'disabled' || e.status === 'unavailable')) return '';
-  if (!e || e.status === 'loading') return '<div class="aisum loading" id="aiSum"><span class="aibadge">AI</span><span class="muted">Summarizing…</span></div>';
-  if (e.status === 'error') return `<div class="aisum err" id="aiSum"><span class="aibadge">AI</span><span class="muted">The summary failed: ${esc(e.error)}</span> <button class="linkbtn" data-sum-refresh>Retry</button></div>`;
-  const s = e.summary;
-  const tags = (s.tags || []).map(t => `<span class="pill sm">${esc(t)}</span>`).join(' ');
-  const notes = (s.notes || []).length ? `<ul>${s.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
-  const who = `Written by ${e.model || 'the language model'}${e.cached ? ', saved earlier' : ''}. It may be wrong; check the code.`;
-  return `<div class="aisum" id="aiSum"><div class="aihead"><span class="aibadge" title="${esc(who)}">AI</span>${tags}<button class="icon" data-sum-refresh title="Write a new summary">↻</button></div><p>${esc(s.purpose)}</p>${notes}</div>`;
-}
-
-function bindSummary(n) {
-  const b = document.querySelector('#aiSum [data-sum-refresh]');
-  if (b) b.onclick = () => requestSummary(n.id, true);
-}
-
-function needsSummary(id) {
-  const e = S.summaries.get(id);
-  return !e || e.stale;
-}
-
-function scheduleSummary(n) {
-  if (!wantsSummary(n) || !needsSummary(n.id)) return;
-  clearTimeout(summaryTimer);
-  summaryTimer = setTimeout(() => {
-    if (S.selected === n.id && needsSummary(n.id)) requestSummary(n.id, false);
-  }, 300);
-}
-
-function requestSummary(id, refresh) {
-  const e = S.summaries.get(id);
-  // After a rescan, keep showing the old summary while the extension checks whether the code changed.
-  if (!refresh && e && e.stale) e.stale = false;
-  else {
-    S.summaries.set(id, { status: 'loading' });
-    updateSummaryBlock(id);
-  }
-  vscode.postMessage({ type: 'getSummary', id, refresh });
-}
-
-/** Redraws only the summary block, so the details panel keeps its scroll position. */
-function updateSummaryBlock(id) {
-  const el = $('aiSum');
-  const n = S.nodes.get(id);
-  if (!el || S.selected !== id || !n) return;
-  el.outerHTML = summaryBlock(n) || '<span id="aiSum"></span>';
-  bindSummary(n);
-}
-
-function onSummary(m) {
-  if (m.cancelled) {
-    // Replaced by a request for another node; ask again if this one is still selected.
-    S.summaries.delete(m.id);
-    const n = S.nodes.get(m.id);
-    if (n && S.selected === m.id) scheduleSummary(n);
-    return;
-  }
-  const status = m.disabled ? 'disabled' : m.unavailable ? 'unavailable' : m.error ? 'error' : 'ready';
-  S.summaries.set(m.id, { status, summary: m.summary, model: m.model, cached: !!m.cached, error: m.error });
-  updateSummaryBlock(m.id);
-}
 
 // ---------------------------------------------------------------------------
 // Change impact (see src/ai/impact.js)
 
-function openImpact(id, changeType) {
-  const description = S.impact ? S.impact.description : '';
-  S.impact = { target: id, changeType: changeType || (S.impact && S.impact.changeType) || 'signature', busy: true, result: null, ai: null, check: null, description: S.impact && S.impact.target === id ? description : '' };
-  switchTab('impact');
-  requestImpact(false);
-}
 
-function requestImpact(quiet) {
-  S.impact.busy = true;
-  if (!quiet) renderImpact();
-  vscode.postMessage({ type: 'impact', id: S.impact.target, changeType: S.impact.changeType });
-}
 
-function onImpact(m) {
-  const imp = S.impact;
-  if (!imp || m.id !== imp.target || m.requested !== imp.changeType) return; // an older request
-  const wasOn = impactOn();
-  imp.busy = false;
-  imp.result = m;
-  if (S.tab === 'impact') renderImpact();
-  // Show the new result on the graph when it was showing, or when the user is looking at it.
-  if (!m.error && (wasOn || S.tab === 'impact' || !S.highlight)) applyImpactHighlight();
-  else syncImpactToggle();
-}
-
-function impactOn() {
-  return !!(S.highlight && S.highlight.source === 'impact' && S.highlight.impact === S.impact);
-}
-
-function applyImpactHighlight() {
-  const imp = S.impact;
-  if (!imp || !imp.result || imp.result.error) return;
-  const ids = new Set([imp.target, ...imp.result.items.map(i => i.id)].filter(id => S.nodes.has(id)));
-  const n = S.nodes.get(imp.target);
-  S.highlight = { ids, path: [], label: `Impact: ${CHANGE_LABELS[imp.changeType].toLowerCase()} of ${n ? n.qname || n.name : imp.target}`, source: 'impact', impact: imp };
-  render();
-}
-
-function syncImpactToggle() {
-  const b = $('impShow');
-  if (!b) return;
-  const on = impactOn();
-  b.classList.toggle('on', on);
-  b.setAttribute('aria-pressed', String(on));
-  b.innerHTML = `<span class="sw"></span>${on ? 'Shown' : 'Show'} on graph`;
-}
-
-function renderImpact() {
-  const el = $('tab-impact');
-  const imp = S.impact;
-  const sel = S.selected && S.nodes.get(S.selected);
-  if (!imp) {
-    el.innerHTML = `<div class="intro"><h3>What if I change this?</h3>
-      <p>Pick a function, class or file, then choose <b>What if I change this?</b> in its details. You'll see what else may need to change, ranked by risk, and the graph is colored by how strongly each part is affected.</p>
-      ${sel && IMPACT_KINDS.has(sel.kind) ? `<button id="impStart" class="primary">What if I change ${esc(sel.name)}?</button>` : ''}</div>`;
-    if ($('impStart')) $('impStart').onclick = () => openImpact(sel.id);
-    return;
-  }
-  const n = S.nodes.get(imp.target);
-  const tabs = IMPACT_CHANGES.map(c => {
-    const label = n && n.kind === 'file' && c === 'signature' ? 'Interface' : CHANGE_LABELS[c];
-    return `<button data-change="${c}" class="${c === imp.changeType ? 'active' : ''}" aria-pressed="${c === imp.changeType}" title="${esc(CHANGE_TITLES[c])}">${label}</button>`;
-  }).join('');
-  const head = `<div class="imphead">${n ? nodeChip(imp.target) : esc(imp.target)}</div>
-    <div class="seg impchange" role="group" aria-label="Kind of change">${tabs}</div>
-    <p class="predict">A prediction from the code graph, not a guarantee. Calls through function pointers, macros or templates may be missing, and calls matched by name may be wrong.</p>`;
-  const r = imp.result;
-  let body;
-  if (!r) body = '<p class="muted">Working it out…</p>';
-  else if (r.error) body = `<p class="muted">${esc(r.error)}</p>`;
-  else {
-    const items = impactItems(imp);
-    const s = { ...r.summary };
-    if (imp.ai && imp.ai.verdicts) {
-      // Recount with the AI's verdicts.
-      for (const t of ['high', 'medium', 'low']) s[t] = items.filter(i => i.tier === t).length;
-      s.overall = Math.round(100 * (1 - Math.exp(-items.reduce((a, i) => a + i.score, 0) / 250)));
-      s.tier = s.overall >= 60 ? 'high' : s.overall >= 30 ? 'medium' : 'low';
-    }
-    const name = id => {
-      const x = S.nodes.get(id);
-      return x ? x.qname || x.name : id;
-    };
-    const groups = new Map();
-    for (const it of items) {
-      if (!groups.has(it.relation)) groups.set(it.relation, []);
-      groups.get(it.relation).push(it);
-    }
-    const ordered = [...groups.entries()].sort((a, b) => b[1][0].score - a[1][0].score);
-    const list = ordered
-      .map(([rel, items]) => `<details open><summary>${esc((r.labels && r.labels.relations[rel]) || rel)} <span class="muted">${items.length}</span></summary><ul class="rel imp">${items
-        .map(it => {
-          const via = it.depth > 1 && it.via ? ` <span class="muted">via ${esc(name(it.via))}</span>` : '';
-          const tags = (it.uncertain ? '<span class="tag uncertain" title="Matched by name only">by name</span>' : '') + (it.test ? '<span class="tag">test</span>' : '');
-          const site = it.site ? ` <a class="site" data-open-file="${esc(it.site.file)}" data-open-line="${it.site.line}" data-side="target" title="${esc(it.site.file + ':' + it.site.line)}">↗</a>` : '';
-          const v = it.verdict;
-          const verdict = v ? `<span class="verdict v-${v.verdict}" title="The AI read this code">${VERDICT_LABELS[v.verdict]}</span>` : '';
-          const vline = v && v.file && v.line ? ` <a class="site" data-open-file="${esc(v.file)}" data-open-line="${v.line}" data-side="target" title="${esc(v.file + ':' + v.line)}">line ${v.line}</a>` : '';
-          const reason = v && v.reason ? `<div class="vreason">${esc(v.reason)}${vline}</div>` : '';
-          return `<li class="imp-${it.tier}"><span class="risk" title="Risk ${it.score} of 100 (${it.tier})${v ? ', adjusted by the AI' : ''}">${it.score}</span>${nodeChip(it.id)}${via}${tags}${verdict}${site}${reason}</li>`;
-        })
-        .join('')}</ul></details>`)
-      .join('');
-    body = `<div class="impsum"><span class="pill imp-${s.tier}" title="Overall risk ${s.overall} of 100">${s.tier} risk</span>
-        <span>${s.count ? `${s.count} place${s.count === 1 ? '' : 's'} in ${s.files} file${s.files === 1 ? '' : 's'} may need attention` : 'Nothing in the graph depends on it'}</span></div>
-      ${s.count ? `<div class="impcounts"><span class="imp-high">${s.high} high</span><span class="imp-medium">${s.medium} medium</span><span class="imp-low">${s.low} low</span></div>` : ''}
-      <ul class="impnotes">${s.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
-      ${s.count ? '<div class="askrow"><button id="impShow" class="hltoggle"></button></div>' : ''}
-      ${s.count ? renderImpactAI(imp, items) : ''}
-      ${list}${r.truncated ? '<p class="muted">Only the 300 most affected are listed.</p>' : ''}
-      ${renderImpactCheck(imp)}`;
-  }
-  el.innerHTML = head + body;
-  el.querySelectorAll('[data-change]').forEach(b => {
-    b.onclick = () => {
-      if (S.impact.changeType === b.dataset.change) return;
-      S.impact.changeType = b.dataset.change;
-      S.impact.result = null;
-      S.impact.ai = null;
-      S.impact.check = null;
-      requestImpact(false);
-    };
-  });
-  if ($('impShow')) {
-    $('impShow').onclick = () => (impactOn() ? setHighlight(null) : applyImpactHighlight());
-    syncImpactToggle();
-  }
-  if ($('impDesc')) $('impDesc').oninput = () => (S.impact.description = $('impDesc').value);
-  if ($('impAI'))
-    $('impAI').onclick = () => {
-      S.impact.ai = { busy: true };
-      renderImpact();
-      vscode.postMessage({ type: 'impactAI', id: S.impact.target, changeType: S.impact.changeType, description: S.impact.description || '' });
-    };
-  if ($('impCheck'))
-    $('impCheck').onclick = () => {
-      S.impact.check = { busy: true };
-      renderImpact();
-      vscode.postMessage({ type: 'impactCheck', id: S.impact.target, changeType: S.impact.changeType });
-    };
-  bindLinks(el);
-}
-
-function renderImpactAI(imp, items) {
-  const ai = imp.ai;
-  const places = Math.min(10, items.filter(i => i.kind !== 'file').length);
-  if (!places) return '';
-  let status = `<span class="muted">The AI reads the code at the ${places} riskiest place${places === 1 ? '' : 's'}.</span>`;
-  if (ai && ai.busy) status = `<span class="muted busy">Reading ${places} place${places === 1 ? '' : 's'}…</span>`;
-  else if (ai && ai.error) status = `<span class="muted">The AI check failed: ${esc(ai.error)}</span>`;
-  else if (ai && ai.verdicts) {
-    const c = k => [...ai.verdicts.values()].filter(v => v.verdict === k).length;
-    status = `<span class="muted">Checked ${ai.asked} place${ai.asked === 1 ? '' : 's'}${ai.model ? ' via ' + esc(ai.model) : ''}: ${c('breaks')} break, ${c('review')} need review, ${c('fine')} likely fine.</span>`;
-  }
-  return `<div class="impai">
-    <textarea id="impDesc" rows="2" placeholder="Describe the change (optional), e.g. “add an int error code parameter”">${esc(imp.description || '')}</textarea>
-    <div class="askrow"><button id="impAI" class="primary"${ai && ai.busy ? ' disabled' : ''}>${ai && ai.verdicts ? 'Check again with AI' : 'Check with AI'}</button>${status}</div>
-  </div>`;
-}
-
-function renderImpactCheck(imp) {
-  const c = imp.check;
-  const intro = '<p class="muted">After making the change, compare this prediction, made from your last commit, with what your uncommitted edits actually changed.</p>';
-  const btn = `<button id="impCheck"${c && c.busy ? ' disabled' : ''}>${c && c.busy ? 'Comparing…' : c && c.result ? 'Check again' : 'Check against my edits'}</button>`;
-  let body = '';
-  const r = c && c.result;
-  if (r && r.error) body = `<p class="muted">${esc(r.error)}</p>`;
-  else if (r) {
-    const pct = x => (x == null ? '–' : Math.round(x * 100) + '%');
-    const what = r.compared === 'files' ? 'file' : 'place';
-    const chips = (list, extra) => (list.length ? `<ul class="rel">${list.map(x => `<li>${nodeChip(x.id)}${extra ? extra(x) : ''}</li>`).join('')}</ul>` : '');
-    const statusTag = x => (x.status ? ` <span class="pill sm st-${x.status}">${x.status}</span>` : '');
-    const target = r.targetChanged ? `It was ${r.targetChanged === 'removed' ? 'removed or its signature changed' : r.targetChanged}.` : 'It has not changed yet.';
-    if (!r.changedCount && !r.targetChanged) body = '<p class="muted">There are no uncommitted changes to compare with yet.</p>';
-    else {
-      const related = r.missed.filter(x => x.related);
-      const unrelated = r.missed.filter(x => !x.related);
-      body = `<p>${target} ${r.changedCount} other ${what}${r.changedCount === 1 ? '' : 's'} changed.</p>
-        <div class="impscore"><span title="Of the places predicted as high or medium risk, how many changed">Precision <b>${pct(r.precision)}</b></span><span title="Of the changed places connected to it, how many were predicted">Recall <b>${pct(r.recall)}</b></span></div>
-        <details open><summary>Predicted and changed <span class="muted">${r.hits.length}</span></summary>${chips(r.hits, statusTag)}</details>
-        <details${r.falseAlarms.length ? ' open' : ''}><summary>Predicted, not changed <span class="muted">${r.falseAlarms.length}</span></summary>${chips(r.falseAlarms, x => ` <span class="muted">${x.tier}</span>`)}</details>
-        <details${related.length ? ' open' : ''}><summary>Changed, not predicted <span class="muted">${related.length}</span></summary>${chips(related, statusTag)}</details>
-        ${unrelated.length ? `<details><summary>Other changes, probably unrelated <span class="muted">${unrelated.length}</span></summary>${chips(unrelated, statusTag)}</details>` : ''}`;
-    }
-  }
-  return `<details class="impcheck" open><summary>Check against my edits</summary>${intro}<div class="askrow">${btn}</div>${body}</details>`;
-}
-
-function aggregatedDeps(id) {
-  // For containers: which other top-level items their contents depend on.
-  const under = new Set();
-  const stack = [id];
-  while (stack.length) {
-    const c = stack.pop();
-    under.add(c);
-    for (const k of S.graph.nodes.length < 50000 ? kidsRaw(c) : []) stack.push(k);
-  }
-  const level = n => {
-    // map to the file containing the node
-    let cur = n;
-    while (cur) {
-      const node = S.nodes.get(cur);
-      if (!node) return null;
-      if (node.kind === 'file') return cur;
-      cur = node.parent;
-    }
-    return null;
-  };
-  const outFiles = new Map();
-  const inFiles = new Map();
-  for (const u of under) {
-    for (const e of S.out.get(u) || []) {
-      if (under.has(e.t) || e.kind === 'includes') continue;
-      const f = level(e.t);
-      if (f && !under.has(f)) outFiles.set(f, (outFiles.get(f) || 0) + (e.n || 1));
-    }
-    for (const e of S.inc.get(u) || []) {
-      if (under.has(e.s) || e.kind === 'includes') continue;
-      const f = level(e.s);
-      if (f && !under.has(f)) inFiles.set(f, (inFiles.get(f) || 0) + (e.n || 1));
-    }
-  }
-  const list = (m, title) =>
-    m.size
-      ? `<details><summary>${title} <span class="muted">${m.size}</span></summary><ul class="rel">${[...m.entries()]
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 60)
-          .map(([f, c]) => `<li>${nodeChip(f, ` <span class="muted">×${c}</span>`)}</li>`)
-          .join('')}</ul></details>`
-      : '';
-  return list(outFiles, 'Depends on files') + list(inFiles, 'Files that depend on this');
-}
-
-function entryPoints() {
-  const mains = S.graph ? S.graph.nodes.filter(n => n.name === 'main' && n.kind === 'function') : [];
-  const classes = S.graph
-    ? S.graph.nodes
-        .filter(n => n.kind === 'class' || n.kind === 'struct')
-        .map(n => [n, (S.inc.get(n.id) || []).length + (S.out.get(n.id) || []).length])
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8)
-        .map(([n]) => n)
-    : [];
-  if (!mains.length && !classes.length) return '';
-  return `<h3>Good places to start</h3><ul class="rel">${mains.map(m => `<li>${nodeChip(m.id, ' <span class="muted">entry point</span>')}</li>`).join('')}${classes.map(c => `<li>${nodeChip(c.id)}</li>`).join('')}</ul>`;
-}
-
-// ---------------------------------------------------------------------------
-// AI layer: concepts and inferred links (see src/ai/semantic.js)
-
-function conceptPills(id) {
-  const tags = S.concepts[id];
-  if (!tags || !tags.length) return '';
-  return `<div class="concepts"><span class="aibadge" title="Concepts tagged by the AI">AI</span>${tags.map(t => `<a class="concept" data-concept="${esc(t)}" title="Highlight everything tagged ${esc(t)}">${esc(t)}</a>`).join('')}</div>`;
-}
-
-/** One line per inferred link, with its confidence, reason and the line that shows it. */
-function semanticItem(e, otherId, outgoing) {
-  const n = S.nodes.get(otherId);
-  if (!n) return '';
-  const label = e.symmetric || outgoing ? e.label : 'is ' + e.label.replace(/ of$/, '').replace(/^replaces$/, 'replaced by').replace(/^validates for$/, 'validated by');
-  const ev = e.evidence ? ` <a class="site" data-open-file="${esc(e.evidence.file)}" data-open-line="${e.evidence.line}" data-side="target" title="${esc(e.evidence.quote)}">${esc(e.evidence.file.split('/').pop() + ':' + e.evidence.line)}</a>` : ' <span class="tag" title="The AI gave no evidence that could be found in the code">no evidence</span>';
-  return `<li><span class="muted">${esc(label)}</span> ${nodeChip(otherId)} <span class="conf-num" title="How confident the AI is">${Math.round(e.confidence * 100)}%</span>${ev}${e.reason ? `<div class="vreason">${esc(e.reason)}</div>` : ''}</li>`;
-}
-
-function semanticSection(id, out, inc) {
-  const items = [
-    ...out.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.t, true)),
-    ...inc.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.s, false))
-  ].filter(Boolean);
-  if (!items.length) return '';
-  return `<details open class="semrel"><summary>AI-inferred links <span class="muted">${items.length}</span></summary><ul class="rel">${items.join('')}</ul></details>`;
-}
-
-function renderSemanticEdge(el, e) {
-  const items = e.raw.map(r => semanticItem(r, r.t, true).replace('<li>', `<li>${nodeChip(r.s)} `)).join('');
-  const r = e.raw[0];
-  const when = r.provenance && r.provenance.time ? ago(r.provenance.time) : '';
-  el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.s)} <span class="muted">${esc(edgeVerb(e))}</span> ${nodeChip(e.t)}</div>
-      <div class="muted">Inferred by the AI${r.provenance && r.provenance.model ? ' (' + esc(r.provenance.model) + ')' : ''}${when ? ', ' + when : ''}, not found in the code's structure. Check it before relying on it.</div></div></div>
-    ${r.hint ? `<p class="muted">Looked at because ${esc(r.hint)}.</p>` : ''}
-    <ul class="rel semlist">${items}</ul>`;
-  bindLinks(el);
-}
-
-/** Highlights every node tagged with a concept. */
-function showConcept(tag) {
-  const ids = new Set(Object.keys(S.concepts).filter(id => S.nodes.has(id) && S.concepts[id].includes(tag)));
-  if (!ids.size) return;
-  S.highlight = { ids, path: [], label: 'Concept: ' + tag + ' (' + ids.size + ')' };
-  revealAll(ids);
-}
-
-function bindConcepts(el) {
-  el.querySelectorAll('[data-concept]').forEach(a => {
-    a.onclick = ev => {
-      ev.preventDefault();
-      showConcept(a.dataset.concept);
-    };
-  });
-}
-
-/** The AI layer part of the start page: concepts to explore, and building or rebuilding it. */
-function semanticIntro() {
-  const busy = S.semanticBusy;
-  const btn = `<button id="semBuild" class="${S.semantic ? '' : 'primary'}"${busy ? ' disabled' : ''}>${busy ? 'Building…' : S.semantic ? 'Update AI layer' : 'Build AI layer'}</button>`;
-  if (!S.semantic) {
-    return `<h3>AI layer</h3><p class="muted">Let the AI tag every function and class with the concept it serves (logging, rendering, parsing…) and find links the structure doesn't show: alternative implementations, replacements, validators. Results are saved, and only changed code is looked at again.</p><div class="askrow">${btn}</div>`;
-  }
-  const counts = new Map();
-  for (const tags of Object.values(S.concepts)) for (const t of tags) counts.set(t, (counts.get(t) || 0) + 1);
-  const pills = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, 40)
-    .map(([t, c]) => `<a class="concept" data-concept="${esc(t)}">${esc(t)} <span class="muted">${c}</span></a>`)
-    .join('');
-  const s = S.semantic;
-  return `<h3>Concepts</h3><div class="concepts">${pills || '<span class="muted">No concepts yet.</span>'}</div>
-    <p class="muted">AI layer: ${s.concepts} concept${s.concepts === 1 ? '' : 's'} on ${s.tagged} element${s.tagged === 1 ? '' : 's'}, ${s.edges} inferred link${s.edges === 1 ? '' : 's'} (turn on <b>AI-inferred</b> under <b>Show ▾</b>)${s.model ? ', by ' + esc(s.model) : ''}${s.time ? ', ' + ago(s.time) : ''}.</p>
-    <div class="askrow">${btn}</div>`;
-}
-
-function renderEdgeDetails(el, e) {
-  if (e.kind === 'semantic') return renderSemanticEdge(el, e);
-  const verb = EDGE_VERBS[e.kind];
-  const raw = e.raw
-    .slice(0, 100)
-    .map(r => {
-      const site = r.sites && r.sites[0];
-      return `<li>${nodeChip(r.s)} <span class="muted">${verb}</span> ${nodeChip(r.t)}${r.uncertain ? ' <span class="muted">?</span>' : ''}${r.status ? ` <span class="pill sm st-${r.status}">${r.status}</span>` : ''}${
-        site ? ` <a class="site" data-open-file="${esc(site.file)}" data-open-line="${site.line}" data-side="${r.status === 'removed' ? 'base' : 'target'}" title="${esc(site.file + ':' + site.line)}">↗</a>` : ''
-      }</li>`;
-    })
-    .join('');
-  el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.s)} <span class="muted">${verb}</span> ${nodeChip(e.t)}</div><div class="muted">${e.raw.length} underlying relationship${e.raw.length === 1 ? '' : 's'}, ${e.count} occurrence${e.count === 1 ? '' : 's'}</div></div></div>
-    ${e.uncertain ? '<p class="muted">Uncertain: the call target was matched by name only and may be one of several candidates.</p>' : ''}
-    <ul class="rel">${raw}</ul>`;
-  bindLinks(el);
-}
-
-function bindLinks(el) {
-  el.querySelectorAll('[data-goto]').forEach(a => {
-    a.onclick = ev => {
-      ev.preventDefault();
-      if (ev.ctrlKey || ev.metaKey) openSource(a.dataset.goto);
-      else reveal(a.dataset.goto);
-    };
-  });
-  el.querySelectorAll('[data-open-file]').forEach(a => {
-    a.onclick = ev => {
-      ev.preventDefault();
-      vscode.postMessage({ type: 'open', file: a.dataset.openFile, line: +a.dataset.openLine, side: a.dataset.side });
-    };
-  });
-}
-
-function switchTab(tab, quiet) {
-  if (quiet && S.tab === 'ai' && S.ai.busy) return;
-  S.tab = tab;
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  for (const t of ['details', 'ai', 'impact']) $('tab-' + t).classList.toggle('hidden', tab !== t);
-  if (tab === 'impact') renderImpact();
-}
 
 // ---------------------------------------------------------------------------
 // AI panel
 
-// Short labels for starter questions: [label, question, mode].
-const SUGGESTIONS = [
-  ['Project overview', 'What does this project do, and how is it organized?'],
-  ['Where it starts', 'Where does the program start, and what happens next?', 'path'],
-  ['How classes relate', 'How do the main classes relate to each other?']
-];
-
-/** The selected node, when it goes with the next question as context. */
-function contextNode() {
-  const n = S.selected && S.nodes.get(S.selected);
-  return n && S.contextOff !== n.id ? n : null;
-}
-
-/** Starter questions, shown only while the box is empty and nothing has been asked. */
-function renderSuggestions() {
-  const el = $('suggestions');
-  const list = SUGGESTIONS.slice();
-  if (S.mode === 'diff') list.unshift(['What changed', 'Summarize what changed between these commits and why it matters']);
-  const n = S.selected && S.nodes.get(S.selected);
-  if (n) list.push([`Explain ${n.name}`, `Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask', n.id]);
-  const shown = list.length > 3 ? list.slice(0, 2).concat(list.slice(-1)) : list;
-  el.innerHTML = `<span class="muted">Try</span>${shown.map(([label, q], i) => `<a class="sugg" data-sugg="${i}" title="${esc(q)}">${esc(label)}</a>`).join('')}`;
-  el.querySelectorAll('[data-sugg]').forEach(a => {
-    const [, q, mode, focus] = shown[+a.dataset.sugg];
-    a.onclick = () => ask(q, mode, focus);
-  });
-  el.classList.toggle('hidden', !!($('question').value.trim() || S.ai.question));
-}
-
-function ask(q, mode, focusId) {
-  q = (q || $('question').value).trim();
-  if (!q) return;
-  $('question').value = q;
-  const ctx = contextNode();
-  const focus = focusId || (ctx ? ctx.id : null);
-  mode = AI_MODES[mode] ? mode : S.aiMode;
-  S.ai = { busy: true, question: q, answer: '', model: null, steps: [], mode };
-  S.historyOpen = false;
-  renderAnswer();
-  vscode.postMessage({ type: 'ask', question: q, focus, mode });
-}
-
-/** The row under the question box: Trace, the selection as context, history, and Ask or Stop. */
-function renderOpts() {
-  const el = $('aiOpts');
-  const trace = S.aiMode === 'path';
-  const n = S.selected && S.nodes.get(S.selected);
-  let ctx = '';
-  if (n) {
-    const on = S.contextOff !== n.id;
-    const info = KIND_INFO[n.kind] || { glyph: '?' };
-    ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.name)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
-  }
-  const count = (S.history || []).length;
-  const hist = count ? `<button id="historyBtn" class="iconbtn" aria-expanded="${!!S.historyOpen}" title="Recent questions">⟲ ${count}</button>` : '';
-  const go = S.ai.busy ? '<button id="cancelAsk">Stop</button>' : `<button id="askBtn" class="primary" title="${esc(AI_MODES[S.aiMode].desc)} (Ctrl+Enter)">${trace ? 'Trace' : 'Ask'}</button>`;
-  el.innerHTML = `<button id="traceChip" class="opt" aria-pressed="${trace}" title="${esc(AI_MODES.path.desc)}">⤳ <span class="lbl">Trace</span></button>${ctx}<span class="spacer"></span>${hist}${go}`;
-  $('traceChip').onclick = () => {
-    S.aiMode = trace ? 'ask' : 'path';
-    persist();
-    renderOpts();
-  };
-  if ($('ctxChip'))
-    $('ctxChip').onclick = () => {
-      S.contextOff = S.contextOff === n.id ? null : n.id;
-      renderOpts();
-    };
-  if ($('historyBtn'))
-    $('historyBtn').onclick = ev => {
-      ev.stopPropagation();
-      S.historyOpen = !S.historyOpen;
-      renderHistory();
-    };
-  if ($('askBtn')) $('askBtn').onclick = () => ask();
-  if ($('cancelAsk')) $('cancelAsk').onclick = () => vscode.postMessage({ type: 'cancelAsk' });
-  $('question').placeholder = AI_MODES[S.aiMode].placeholder + '  (Ctrl+Enter)';
-}
-
-/** Marks the nodes an investigation step looked at (null clears). */
-function setVisited(ids) {
-  S.visited = ids && ids.length ? new Set(ids.filter(id => S.nodes.has(id))) : null;
-  if (S.layout) render();
-}
-
-function renderSteps(a) {
-  const rows = a.steps
-    .map((st, i) => {
-      const live = a.busy && i === a.steps.length - 1;
-      const n = (st.nodeIds || []).length;
-      return `<li class="stepi${live ? ' live' : ''}" data-step="${i}"${st.note ? ` title="${esc(st.note)}"` : ''}><span class="sg">${STEP_GLYPHS[st.tool] || '•'}</span><span class="st">${esc(st.summary || st.tool)}</span>${n ? `<span class="muted">${n}</span>` : ''}</li>`;
-    })
-    .join('');
-  return `<div class="aidrawer steps"><ol id="aiSteps">${rows}</ol></div>`;
-}
-
-/** The answer's routes; answers without routes (single prompt, older history) get one from their path. */
-function aiRoutes(a) {
-  if (a.routes && a.routes.length) return a.routes;
-  if (!a.path || a.path.length < 2) return [];
-  const hops = a.hops || [];
-  return [{ label: 'main', divergeAt: 0, steps: a.path.map((id, i) => Object.assign({ id, kind: 'call' }, i ? hops[i - 1] || {} : {})) }];
-}
-
-function currentRoute(a) {
-  const routes = aiRoutes(a);
-  return routes[Math.min(a.routeIdx || 0, routes.length - 1)] || null;
-}
-
-/** The answer's route when there is one worth showing (at least two steps). */
-function shownRoute(a) {
-  const route = currentRoute(a);
-  return route && route.steps.length >= 2 ? route : null;
-}
-
-function renderRoutes(a) {
-  const routes = aiRoutes(a);
-  const route = shownRoute(a);
-  if (!route) return '';
-  const idx = routes.indexOf(route);
-  const switcher =
-    routes.length > 1
-      ? `<div class="seg routesw" role="group" aria-label="Route">${routes
-          .map((r, i) => `<button data-route="${i}" class="${i === idx ? 'active' : ''}" aria-pressed="${i === idx}" title="${esc(r.label)}: ${r.steps.length} steps">${esc(r.label)}</button>`)
-          .join('')}</div>`
-      : '';
-  const items = route.steps
-    .map((st, i) => {
-      const k = ROUTE_KINDS[st.kind] || ROUTE_KINDS.call;
-      const tags = [];
-      if (i && st.inferred) tags.push(`<span class="tag inferred" title="${esc(hopTitle(st))}">inferred</span>`);
-      else if (i && st.dispatch) tags.push(`<span class="tag uncertain" title="${esc(hopTitle(st))}">virtual</span>`);
-      else if (i && st.uncertain) tags.push(`<span class="tag uncertain" title="${esc(hopTitle(st))}">by name</span>`);
-      if (i && st.returns) tags.push('<span class="tag">returns</span>');
-      const site = i && st.site ? ` <a class="site" data-open-file="${esc(st.site.file)}" data-open-line="${st.site.line}" data-side="target" title="Call site ${esc(st.site.file + ':' + st.site.line)}">↗</a>` : '';
-      const shared = i < (route.divergeAt || 0) ? ' shared' : '';
-      return `<li class="rs k-${st.kind}${shared}"><span class="rn">${i + 1}</span><span class="rk" title="${esc(k.label)}">${k.glyph}</span><div class="rb">${nodeChip(st.id)}${tags.join('')}${site}${st.condition ? `<div class="rc">${esc(st.condition)}</div>` : ''}${st.note ? `<div class="muted rnote">${esc(st.note)}</div>` : ''}</div></li>`;
-    })
-    .join('');
-  return `<div class="aidrawer routebox">${switcher}<ol class="route">${items}</ol></div>`;
-}
-
-function evidenceOf(a) {
-  return (a.evidence || []).filter(e => e.file || e.nodeId);
-}
-
-function renderEvidence(a) {
-  const ev = evidenceOf(a);
-  if (!ev.length) return '';
-  const items = ev
-    .map(e => {
-      const where = e.file
-        ? `<a class="site" data-open-file="${esc(e.file)}" data-open-line="${e.line || 1}" data-side="target" title="Open ${esc(e.file + ':' + (e.line || 1))}">${esc(e.file.split('/').pop() + (e.line ? ':' + e.line : ''))}</a>`
-        : '';
-      return `<li>${e.claim ? esc(e.claim) + ' ' : ''}${e.nodeId && S.nodes.has(e.nodeId) ? nodeChip(e.nodeId) + ' ' : ''}${where}</li>`;
-    })
-    .join('');
-  return `<div class="aidrawer evidence"><ul class="rel">${items}</ul></div>`;
-}
-
-const CONF_TITLES = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
-
-function renderConfidence(a) {
-  const why = a.confidenceReason || CONF_TITLES[a.confidence] || '';
-  return `<div class="aidrawer confbox"><span class="conf-${a.confidence}">${esc(a.confidence[0].toUpperCase() + a.confidence.slice(1))} confidence.</span> ${esc(why)}${a.model ? `<div class="muted">Answered by ${esc(a.model)}</div>` : ''}</div>`;
-}
-
-/** Which drawer under the answer is open: a trace opens its route, anything else starts closed. */
-function openDrawer(a) {
-  if (a.open !== undefined) return a.open;
-  return a.mode === 'path' && shownRoute(a) ? 'route' : null;
-}
-
-/** One strip of small toggles under the answer; each opens its drawer below. */
-function renderStrip(a) {
-  const open = openDrawer(a);
-  const item = (key, label, cls, title) =>
-    `<button class="mi${cls ? ' ' + cls : ''}" data-open="${key}" aria-expanded="${open === key}"${title ? ` title="${esc(title)}"` : ''}>${label} <span class="car">${open === key ? '▴' : '▾'}</span></button>`;
-  const route = shownRoute(a);
-  const ev = evidenceOf(a).length;
-  const n = (a.steps || []).length;
-  const items = [];
-  if (a.highlight && a.highlight.length) items.push('<button id="aiShow" class="mi hltoggle"></button>');
-  if (route) items.push(item('route', `Route ${route.steps.length}`, '', 'The execution path, in call order'));
-  if (n) items.push(item('steps', `${n} step${n === 1 ? '' : 's'}`, '', 'How the AI investigated'));
-  if (ev) items.push(item('evidence', `${ev} source${ev === 1 ? '' : 's'}`, '', 'The code lines the answer cites'));
-  if (a.confidence) {
-    const why = a.confidenceReason ? `${a.confidence}: ${a.confidenceReason}` : CONF_TITLES[a.confidence] || '';
-    items.push(item('conf', `<span class="dot"></span>${esc(a.confidence)}`, `conf conf-${a.confidence}`, why));
-  } else if (a.model) items.push(`<span class="muted">via ${esc(a.model)}</span>`);
-  const again = a.fromHistory || a.error ? `<button id="aiAgain" class="mi end" title="Ask this question again with the current code">↻ ${a.error ? 'Try again' : 'Ask again'}</button>` : '';
-  if (!items.length && !again) return '';
-  const drawers = { route: renderRoutes, steps: renderSteps, evidence: renderEvidence, conf: a.confidence ? renderConfidence : () => '' };
-  return `<div class="metastrip">${items.join('<span class="sep">·</span>')}${again}</div>${open && drawers[open] ? drawers[open](a) : ''}`;
-}
-
-function mdLite(text) {
-  // Minimal, safe markdown: code blocks, inline code, bold, lists, node refs.
-  const blocks = String(text).split(/```[a-zA-Z+]*\n?/);
-  return blocks
-    .map((b, i) => {
-      if (i % 2 === 1) return `<pre class="code">${esc(b.replace(/\n$/, ''))}</pre>`;
-      // Node references become placeholders first so formatting cannot touch their ids.
-      const chips = [];
-      let h = esc(
-        b.replace(/\[\[([^\]]+)\]\]/g, (m, id) => {
-          if (!S.nodes.has(id)) return m;
-          chips.push(nodeChip(id));
-          return '\u0000' + (chips.length - 1) + '\u0000';
-        })
-      );
-      h = h.replace(/`([^`]+)`/g, '<code>$1</code>');
-      h = h.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-      h = h.replace(/^#{1,4} (.*)$/gm, '<b>$1</b>');
-      h = h.replace(/^\s*[-*] (.*)$/gm, '<li>$1</li>');
-      h = h.replace(/^\s*\d+\. (.*)$/gm, '<li class="num">$1</li>');
-      h = h.replace(/(<li( class="num")?>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
-      h = h.replace(/\n{2,}/g, '<br><br>').replace(/\n/g, '<br>');
-      return h.replace(/\u0000(\d+)\u0000/g, (m, i) => chips[+i]);
-    })
-    .join('');
-}
-
-function renderAnswer() {
-  const el = $('answer');
-  const a = S.ai;
-  renderHistory();
-  renderSuggestions();
-  if (!a.question) {
-    el.innerHTML = '';
-    return;
-  }
-  const trace = a.mode === 'path' ? `<span class="tg" title="${esc(AI_MODES.path.desc)}">⤳</span>` : '';
-  const when = a.fromHistory && a.time ? `<span class="muted when">${esc(ago(a.time))}</span>` : '';
-  const steps = a.steps || [];
-  let body;
-  if (a.busy) {
-    // While it works: one line for the current step; the full list is one click away.
-    const cur = steps[steps.length - 1];
-    const open = a.open === 'steps';
-    const live = cur
-      ? `<div class="ailive" id="aiLive"><span class="sg">${STEP_GLYPHS[cur.tool] || '•'}</span><span class="st">${esc(cur.summary || cur.tool)}…</span><button class="mi" data-open="steps" aria-expanded="${open}" title="How the AI is investigating">${steps.length} step${steps.length === 1 ? '' : 's'} <span class="car">${open ? '▴' : '▾'}</span></button></div>${open ? renderSteps(a) : ''}`
-      : '';
-    body = `${live}<div class="a">${a.answer ? mdLite(a.answer) : cur ? '' : '<span class="muted">Thinking…</span>'}</div>`;
-  } else body = `<div class="a${a.error ? ' err' : ''}">${a.answer ? mdLite(a.answer) : ''}</div>${renderStrip(a)}`;
-  el.innerHTML = `<div class="q${trace ? ' trace' : ''}">${trace}<span class="qt">${esc(a.question)}</span>${when}</div>${body}`;
-  if ($('aiAgain'))
-    $('aiAgain').onclick = () => {
-      S.aiMode = AI_MODES[a.mode] ? a.mode : 'ask';
-      persist();
-      ask(a.question, S.aiMode);
-    };
-  if ($('aiShow')) {
-    $('aiShow').onclick = () => (aiHighlightOn() ? setHighlight(null) : applyAiHighlight(true));
-    syncAiToggle();
-  }
-  el.querySelectorAll('[data-open]').forEach(b => {
-    b.onclick = () => {
-      a.open = openDrawer(a) === b.dataset.open ? null : b.dataset.open;
-      renderAnswer();
-    };
-  });
-  el.querySelectorAll('[data-route]').forEach(b => {
-    b.onclick = () => {
-      a.routeIdx = +b.dataset.route;
-      renderAnswer();
-      applyAiHighlight(false);
-    };
-  });
-  const list = $('aiSteps');
-  if (list) {
-    list.querySelectorAll('.stepi').forEach(li => {
-      const st = a.steps[+li.dataset.step];
-      li.onmouseenter = () => setVisited(st.nodeIds);
-      li.onmouseleave = () => setVisited(a.busy && a.steps.length ? a.steps[a.steps.length - 1].nodeIds : null);
-      li.onclick = () => {
-        const ids = new Set((st.nodeIds || []).filter(id => S.nodes.has(id)));
-        if (!ids.size) return;
-        S.highlight = { ids, path: [], label: `Step ${+li.dataset.step + 1}: ${st.summary || st.tool}` };
-        revealAll(ids);
-      };
-    });
-  }
-  bindLinks(el);
-}
-
-function renderHistory() {
-  const el = $('history');
-  const list = S.history || [];
-  if (!list.length) S.historyOpen = false;
-  el.classList.toggle('hidden', !S.historyOpen);
-  renderOpts();
-  if (!list.length) {
-    el.innerHTML = '';
-    return;
-  }
-  const busy = S.ai.busy;
-  const rows = list
-    .map(e => {
-      const cls = ['histi'];
-      if (e.id === S.ai.entryId) cls.push('active');
-      if (busy) cls.push('disabled');
-      const glyph = e.mode === 'path' ? '⤳' : '?';
-      return `<li class="${cls.join(' ')}" data-hist="${esc(e.id)}" title="${esc(busy ? 'Wait for the current answer' : e.question)}"><span class="hg">${glyph}</span><span class="hq">${esc(e.question)}</span>${e.compare ? '<span class="pill sm" title="Asked while comparing commits">diff</span>' : ''}<span class="muted ht">${esc(ago(e.time))}</span><button class="hx" data-hist-del="${esc(e.id)}" title="Remove from history">✕</button></li>`;
-    })
-    .join('');
-  el.innerHTML = `<ul class="hist">${rows}</ul><div class="histfoot"><button id="historyClear" class="linkbtn" title="Delete every saved question in this workspace">Clear history</button></div>`;
-  el.querySelectorAll('[data-hist]').forEach(li => {
-    li.onclick = ev => {
-      ev.stopPropagation();
-      if (ev.target.closest('[data-hist-del]') || S.ai.busy) return;
-      const e = S.history.find(x => x.id === li.dataset.hist);
-      if (!e) return;
-      S.historyOpen = false;
-      openHistory(e);
-    };
-  });
-  el.querySelectorAll('[data-hist-del]').forEach(b => {
-    b.onclick = ev => {
-      ev.stopPropagation();
-      vscode.postMessage({ type: 'aiHistoryDelete', id: b.dataset.histDel });
-    };
-  });
-  $('historyClear').onclick = () => vscode.postMessage({ type: 'aiHistoryClear' });
-}
-
-/** Shows a saved answer again, with its steps, evidence and highlight. */
-function openHistory(e) {
-  S.ai = {
-    busy: false, question: e.question, mode: e.mode, steps: (e.steps || []).map((s, i) => ({ ...s, i })),
-    answer: e.answer, highlight: e.highlight || [], path: e.path || [], hops: e.hops, routes: e.routes, routeIdx: 0, evidence: e.evidence, confidence: e.confidence, confidenceReason: e.confidenceReason,
-    model: e.model, entryId: e.id, time: e.time, fromHistory: true
-  };
-  S.visited = null;
-  renderAnswer();
-  if (S.ai.highlight.length) applyAiHighlight(false);
-  else setHighlight(null);
-}
-
-/** Whether the graph currently shows the highlight of the latest AI answer. */
-function aiHighlightOn() {
-  return !!(S.highlight && S.highlight.source === 'ai' && S.highlight.answer === S.ai);
-}
-
-/** Updates the answer's highlight toggle after anything changed the highlight. */
-function syncAiToggle() {
-  const b = $('aiShow');
-  if (!b) return;
-  const on = aiHighlightOn();
-  const n = (S.ai.highlight || []).filter(id => S.nodes.has(id)).length;
-  b.classList.toggle('on', on);
-  b.setAttribute('aria-pressed', String(on));
-  b.title = on ? 'Remove the highlight from the graph' : 'Highlight the nodes from this answer in the graph';
-  b.setAttribute('aria-label', `${on ? 'Highlighted' : 'Highlight'} in graph: ${n} node${n === 1 ? '' : 's'}`);
-  b.innerHTML = `<span class="sw"></span>${n}`;
-}
-
-function applyAiHighlight(revealToo) {
-  const a = S.ai;
-  if (!a.highlight || !a.highlight.length) return;
-  const route = currentRoute(a);
-  // Steps whose node no longer exists are dropped, keeping each step's kind and hop with its node.
-  const steps = route ? route.steps.filter(st => S.nodes.has(st.id)) : (a.path || []).filter(id => S.nodes.has(id)).map(id => ({ id, kind: 'call' }));
-  const ids = new Set(a.highlight.filter(id => S.nodes.has(id)));
-  for (const st of steps) ids.add(st.id);
-  const label = 'AI: ' + (a.question.length > 60 ? a.question.slice(0, 57) + '…' : a.question) + (route && aiRoutes(a).length > 1 ? ` (${route.label})` : '');
-  S.highlight = { ids, path: steps.map(st => st.id), route: { steps, divergeAt: route ? route.divergeAt || 0 : 0 }, label, source: 'ai', answer: a };
-  if (revealToo) revealAll(ids);
-  else render();
-}
 
 // ---------------------------------------------------------------------------
 // Search
 
-function runSearch(q) {
-  S.search.q = q;
-  const ql = q.trim().toLowerCase();
-  if (!ql) {
-    S.search.matches = [];
-    S.search.index = -1;
-  } else {
-    const scored = [];
-    for (const n of S.graph.nodes) {
-      const name = (n.name || '').toLowerCase();
-      const qn = (n.qname || n.file || '').toLowerCase();
-      let s = 0;
-      if (name === ql) s = 4;
-      else if (name.startsWith(ql)) s = 3;
-      else if (name.includes(ql)) s = 2;
-      else if (qn.includes(ql)) s = 1;
-      if (s) scored.push([n, s]);
-    }
-    scored.sort((a, b) => b[1] - a[1] || ((KIND_INFO[a[0].kind] || {}).rank || 9) - ((KIND_INFO[b[0].kind] || {}).rank || 9) || a[0].name.localeCompare(b[0].name));
-    S.search.matches = scored.map(([n]) => n.id);
-    S.search.index = -1;
-  }
-  $('searchCount').textContent = ql ? (S.search.matches.length ? `${S.search.matches.length}` : 'none') : '';
-  renderSearchList();
-  render();
-}
-
-function renderSearchList() {
-  const el = $('searchList');
-  const m = S.search.matches.slice(0, 60);
-  if (!S.search.q.trim() || !m.length || document.activeElement !== $('search')) {
-    el.classList.add('hidden');
-    return;
-  }
-  el.classList.remove('hidden');
-  el.innerHTML = m
-    .map((id, i) => {
-      const n = S.nodes.get(id);
-      const info = KIND_INFO[n.kind] || { glyph: '?' };
-      return `<div class="sitem${i === S.search.index ? ' active' : ''}" data-i="${i}"><span class="chip k-${n.kind}"><span class="g">${info.glyph}</span>${esc(n.name)}</span><span class="muted">${esc(n.qname && n.qname !== n.name ? n.qname : '')} ${esc(n.file || '')}${n.line ? ':' + n.line : ''}</span></div>`;
-    })
-    .join('');
-  el.querySelectorAll('.sitem').forEach(it => {
-    it.onmousedown = ev => {
-      ev.preventDefault();
-      gotoMatch(+it.dataset.i);
-      $('search').blur();
-      el.classList.add('hidden');
-    };
-  });
-}
-
-function gotoMatch(i) {
-  const m = S.search.matches;
-  if (!m.length) return;
-  S.search.index = ((i % m.length) + m.length) % m.length;
-  $('searchCount').textContent = `${S.search.index + 1}/${m.length}`;
-  reveal(m[S.search.index]);
-}
 
 // ---------------------------------------------------------------------------
 // Events
 
-function nodeIdFromEvent(ev) {
+export function nodeIdFromEvent(ev) {
   const g = ev.target.closest && ev.target.closest('[data-id]');
   return g ? g.dataset.id : null;
 }
@@ -2409,26 +924,12 @@ svg.addEventListener(
 );
 svg.addEventListener('pointerleave', hideTooltip);
 
-function showTooltipFor(ev) {
+export function showTooltipFor(ev) {
   const tip = $('tooltip');
   if (ev.target.closest && ev.target.closest('.codecard')) return hideTooltip();
   const id = nodeIdFromEvent(ev);
   const eg = !id && ev.target.closest && ev.target.closest('[data-edge]');
-  let html = '';
-  if (id) {
-    const n = S.nodes.get(id);
-    const info = KIND_INFO[n.kind] || { label: n.kind };
-    html = `<b>${esc(n.name)}</b> <span class="muted">${esc(info.label)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${n.qname && n.qname !== n.name && !n.signature ? `<div class="mono">${esc(n.qname)}</div>` : ''}${
-      n.file && n.kind !== 'dir' ? `<div class="muted">${esc(n.defFile || n.file)}:${n.defLine || n.line || 1}</div>` : ''
-    }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}`;
-  } else if (eg && S.layout) {
-    const e = findEdge(eg.dataset.edge);
-    if (e) {
-      const verb = edgeVerb(e);
-      const ai = e.kind === 'semantic' && e.raw[0] ? `<div class="muted">AI-inferred, ${Math.round(e.raw[0].confidence * 100)}% confident${e.raw[0].reason ? ': ' + esc(e.raw[0].reason) : ''}</div>` : '';
-      html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.t).name)}</b>${ai}${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
-    }
-  }
+  const html = tooltipHtml(id, eg && eg.dataset.edge);
   if (!html) return hideTooltip();
   tip.innerHTML = html;
   tip.classList.remove('hidden');
@@ -2440,7 +941,7 @@ function showTooltipFor(ev) {
   tip.style.left = x + 'px';
   tip.style.top = y + 'px';
 }
-function hideTooltip() {
+export function hideTooltip() {
   $('tooltip').classList.add('hidden');
 }
 
@@ -2453,189 +954,8 @@ $('zoomOut').onclick = () => {
   const r = svg.getBoundingClientRect();
   zoomAt(0.8, r.width / 2, r.height / 2);
 };
-$('expandAll').onclick = expandLevel;
-$('collapseAll').onclick = collapseAll;
-$('focusMode').checked = S.focusMode;
-$('focusMode').onchange = ev => {
-  S.focusMode = ev.target.checked;
-  persist();
-  render();
-};
-$('filtersBtn').onclick = ev => {
-  ev.stopPropagation();
-  $('filters').classList.toggle('hidden');
-};
-document.addEventListener('click', ev => {
-  if (!ev.target.closest('#filters') && ev.target.id !== 'filtersBtn') $('filters').classList.add('hidden');
-  if (S.historyOpen && ev.target.isConnected && !ev.target.closest('#history, #historyBtn')) {
-    S.historyOpen = false;
-    renderHistory();
-  }
-});
-$('compareBtn').onclick = () => vscode.postMessage({ type: 'compare' });
-$('refreshBtn').onclick = () => {
-  setStatus('Rescanning…', true);
-  vscode.postMessage({ type: 'refresh' });
-};
-document.querySelectorAll('.tabs button').forEach(b => (b.onclick = () => switchTab(b.dataset.tab)));
-$('question').addEventListener('input', () => $('suggestions').classList.toggle('hidden', !!($('question').value.trim() || S.ai.question)));
-$('question').addEventListener('keydown', ev => {
-  if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
-    ev.preventDefault();
-    ask();
-  }
-});
-
-const search = $('search');
-let searchTimer = null;
-search.addEventListener('input', () => {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => runSearch(search.value), 120);
-});
-search.addEventListener('focus', renderSearchList);
-search.addEventListener('blur', () => setTimeout(() => $('searchList').classList.add('hidden'), 100));
-search.addEventListener('keydown', ev => {
-  if (ev.key === 'Enter') {
-    ev.preventDefault();
-    if (search.value !== S.search.q) runSearch(search.value);
-    gotoMatch(S.search.index + (ev.shiftKey ? -1 : 1));
-    renderSearchList();
-  } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
-    ev.preventDefault();
-    const m = S.search.matches;
-    if (!m.length) return;
-    S.search.index = (S.search.index + (ev.key === 'ArrowDown' ? 1 : -1) + Math.min(m.length, 60)) % Math.min(m.length, 60);
-    renderSearchList();
-  } else if (ev.key === 'Escape') {
-    search.value = '';
-    runSearch('');
-    search.blur();
-    svg.focus();
-  }
-});
-$('searchNext').onclick = () => gotoMatch(S.search.index + 1);
-$('searchPrev').onclick = () => gotoMatch(S.search.index - 1);
-
-document.addEventListener('keydown', ev => {
-  const tag = (ev.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea') return;
-  if (ev.key === '/' || (ev.key === 'f' && (ev.ctrlKey || ev.metaKey))) {
-    ev.preventDefault();
-    search.focus();
-    search.select();
-  } else if (ev.key === 'f' || ev.key === 'F') fitView(true);
-  else if (ev.key === 'Escape') {
-    if (S.highlight) setHighlight(null);
-    else if (S.selected || S.selectedEdge) {
-      S.selected = null;
-      S.selectedEdge = null;
-      render();
-      renderDetails();
-    }
-  } else if ((ev.key === '+' || ev.key === '=' || ev.key === 'ArrowRight') && S.selected) toggle(S.selected, true);
-  else if ((ev.key === '-' || ev.key === 'ArrowLeft') && S.selected) {
-    if (S.expanded.has(S.selected)) toggle(S.selected, false);
-    else if (S.parentOf.get(S.selected)) {
-      const p = S.parentOf.get(S.selected);
-      toggle(p, false);
-      select(p);
-    }
-  } else if (ev.key === 'Enter' && S.selected) openSource(S.selected);
-  else if ((ev.key === 'o' || ev.key === 'O') && !ev.ctrlKey && !ev.metaKey && S.selected) focusArea(S.selected);
-  else if ((ev.key === 'c' || ev.key === 'C') && !ev.ctrlKey && !ev.metaKey && S.selected) {
-    toggleCode(S.selected);
-    renderDetails();
-  }
-});
-
 let resizeTimer = null;
 window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => S.view && applyView(), 100);
 });
-
-// ---------------------------------------------------------------------------
-// Messages from the extension
-
-window.addEventListener('message', ev => {
-  const m = ev.data;
-  switch (m.type) {
-    case 'graph':
-      // The code may have changed: check again (the extension answers from its cache when it hasn't).
-      for (const e of S.summaries.values()) e.stale = true;
-      if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
-      if (m.compare) S.compare = m.compare;
-      loadGraph(m.graph, m.mode, m.title, m.compare);
-      renderSuggestions();
-      break;
-    case 'status':
-      setStatus(m.text, m.busy, m.error);
-      break;
-    case 'source': {
-      const id = onSource(m);
-      if (id) relayoutKeeping(id);
-      break;
-    }
-    case 'reveal':
-      reveal(m.id);
-      break;
-    case 'aiStart':
-      // Keep the mode when this confirms a question asked from the panel; questions from the command palette use Ask.
-      S.ai = { busy: true, question: m.question, answer: '', model: null, steps: [], mode: S.ai.busy && S.ai.question === m.question ? S.ai.mode : 'ask' };
-      $('question').value = m.question;
-      switchTab('ai');
-      renderAnswer();
-      break;
-    case 'aiPartial':
-      S.ai.answer = m.text;
-      renderAnswer();
-      break;
-    case 'summary':
-      onSummary(m);
-      break;
-    case 'impactResult':
-      onImpact(m);
-      break;
-    case 'semanticBuilding':
-      S.semanticBusy = !!m.busy;
-      if (!S.selected && !S.selectedEdge) renderDetails();
-      break;
-    case 'impactAIResult':
-    case 'impactCheckResult': {
-      const imp = S.impact;
-      if (!imp || m.id !== imp.target || m.requested !== imp.changeType || m.cancelled) break;
-      if (m.type === 'impactAIResult') imp.ai = m.error ? { error: m.error } : { verdicts: new Map(m.verdicts.map(v => [v.id, v])), asked: m.asked, model: m.model };
-      else imp.check = { result: m };
-      if (S.tab === 'impact') renderImpact();
-      if (m.type === 'impactAIResult' && impactOn()) render();
-      break;
-    }
-    case 'aiHistory':
-      S.history = m.entries || [];
-      renderHistory();
-      break;
-    case 'aiStep':
-      S.ai.steps.push(m.step);
-      renderAnswer();
-      setVisited(m.step.nodeIds);
-      break;
-    case 'aiResult':
-      S.ai = {
-        busy: false, question: S.ai.question, mode: S.ai.mode, steps: S.ai.steps || [], open: S.ai.open === 'steps' ? 'steps' : undefined, error: !!m.error,
-        answer: m.answer, highlight: m.highlight, path: m.path, hops: m.hops, routes: m.routes, routeIdx: 0, evidence: m.evidence, confidence: m.confidence, confidenceReason: m.confidenceReason, model: m.model,
-        entryId: m.entryId, time: m.time
-      };
-      S.visited = null;
-      if (!m.error && !m.cancelled) $('question').value = '';
-      renderAnswer();
-      if (m.highlight && m.highlight.length) applyAiHighlight(false);
-      break;
-  }
-});
-
-renderAnswer();
-setStatus('Scanning C/C++ files…', true);
-vscode.postMessage({ type: 'ready' });
-
-// Exposed for tests.
-window.__codeGraph = { S, loadGraph, reveal, toggle, toggleCode, trace, centerOn, applyPreset, setEdgeMode, focusArea };
