@@ -9,7 +9,7 @@
 
 const { STOP_WORDS } = require('./context');
 
-const CALLABLE = new Set(['function', 'method']);
+const CALLABLE = new Set(['function', 'method', 'prototype']);
 const CONTAINER = new Set(['dir', 'file', 'namespace', 'class', 'struct', 'union']);
 const LINE_MAX = 160;
 
@@ -66,9 +66,9 @@ class GraphTools {
     for (const n of graph.nodes) if (n.parent) push(this.children, n.parent, n.id);
     for (const e of graph.edges) {
       if (e.status === 'removed' && !opts.includeRemoved) continue;
-      if (!this.nodes.has(e.s) || !this.nodes.has(e.t)) continue;
-      push(this.out, e.s, e);
-      push(this.inc, e.t, e);
+      if (!this.nodes.has(e.source) || !this.nodes.has(e.target)) continue;
+      push(this.out, e.source, e);
+      push(this.inc, e.target, e);
     }
     this.buildSearchIndex();
     this.buildRanges();
@@ -88,13 +88,13 @@ class GraphTools {
     if (this.nodes.has(x)) return this.nodes.get(x);
     const bare = x.replace(/\(.*\)$/, '');
     // Functions first, then classes, but a bare class name means the class, not its constructor.
-    const isCtor = n => n.kind === 'method' && n.parent && (this.nodes.get(n.parent) || {}).name === n.name;
+    const isCtor = n => n.kind === 'method' && n.parent && (this.nodes.get(n.parent) || {}).label === n.label;
     const prefer = n => (isCtor(n) ? 1.5 : CALLABLE.has(n.kind) ? 0 : n.kind === 'class' || n.kind === 'struct' ? 1 : 2) + (n.defFile ? 0 : 0.25);
     const pick = list => (list.length ? list.sort((a, b) => prefer(a) - prefer(b))[0] : null);
     const all = this.graph.nodes.filter(n => n.kind !== 'dir');
-    // Fields have no qname, but their ids do: "field:geo::Canvas::pixels_".
-    const qualified = n => n.qname || n.id.replace(/^[a-z]+:/, '').replace(/\(.*$/, '');
-    return pick(all.filter(n => qualified(n) === bare)) || pick(all.filter(n => n.name === bare)) || pick(all.filter(n => n.kind === 'file' && (n.file === bare || n.file.endsWith('/' + bare)))) || null;
+    // Files and folders have no qname: match them by path below.
+    const qualified = n => n.qname || n.label;
+    return pick(all.filter(n => qualified(n) === bare)) || pick(all.filter(n => n.label === bare)) || pick(all.filter(n => n.kind === 'file' && (n.file === bare || n.file.endsWith('/' + bare)))) || null;
   }
 
   loc(n) {
@@ -103,7 +103,7 @@ class GraphTools {
 
   label(n) {
     const status = n.status ? ' [' + n.status + ']' : '';
-    return `${this.ref(n.id)} ${n.kind} ${n.qname || n.name}${status} @${this.loc(n)}`;
+    return `${this.ref(n.id)} ${n.kind} ${n.qname || n.label}${status} @${this.loc(n)}`;
   }
 
   notFound(x) {
@@ -124,7 +124,7 @@ class GraphTools {
       const add = (text, w) => {
         for (const t of tokenize(text)) tf.set(t, (tf.get(t) || 0) + w);
       };
-      add(n.name, 3);
+      add(n.label, 3);
       add(n.qname, 2);
       add(n.signature, 1);
       add(n.file, 1);
@@ -216,7 +216,7 @@ class GraphTools {
     if (!n) return this.notFound(x);
     const lines = [this.label(n)];
     if (n.signature) lines.push('signature: ' + n.signature);
-    const flags = [n.access, n.isVirtual && 'virtual', n.isPure && 'pure', n.isStatic && 'static', n.header && 'header'].filter(Boolean);
+    const flags = [n.access, n.isVirtual && 'virtual', n.isPure && 'pure', n.isStatic && 'static', n.fileRole === 'header' && 'header'].filter(Boolean);
     if (flags.length) lines.push('flags: ' + flags.join(', '));
     if (n.declFile) lines.push('declared: ' + n.declFile + ':' + n.declLine);
     if (n.defFile) lines.push('defined: ' + n.defFile + ':' + n.defLine + (n.defEndLine ? '-' + n.defEndLine : ''));
@@ -261,7 +261,7 @@ class GraphTools {
     const take = (list, outgoing) => {
       for (const e of list) {
         if (kinds && !kinds.has(e.kind)) continue;
-        rows.push({ e, other: outgoing ? e.t : e.s, outgoing });
+        rows.push({ e, other: outgoing ? e.target : e.source, outgoing });
       }
     };
     if (dir !== 'in') take(this.out.get(n.id) || [], true);
@@ -330,15 +330,15 @@ class GraphTools {
       if (seen >= k) continue;
       expanded.set(last, seen + 1);
       for (const e of this.out.get(last) || []) {
-        if (e.kind !== 'calls' || p.includes(e.t)) continue;
-        queue.push([...p, e.t]);
+        if (e.kind !== 'call' || p.includes(e.target)) continue;
+        queue.push([...p, e.target]);
       }
     }
     if (!paths.length) return { text: `No call chain of up to ${maxDepth} calls from ${this.label(a)} to ${this.label(b)}. (Calls through function pointers, callbacks or macros are not in the graph.)`, nodeIds: [a.id, b.id], paths };
     const lines = paths.map((p, i) => {
       const hops = [];
       for (let j = 1; j < p.length; j++) {
-        const e = (this.out.get(p[j - 1]) || []).find(x => x.kind === 'calls' && x.t === p[j]);
+        const e = (this.out.get(p[j - 1]) || []).find(x => x.kind === 'call' && x.target === p[j]);
         const site = e && e.sites && e.sites[0];
         hops.push((e && e.uncertain ? ' -?-> ' : ' -> ') + this.ref(p[j]) + (site ? ` (${site.file}:${site.line})` : ''));
       }
@@ -360,7 +360,7 @@ class GraphTools {
     const n = this.resolve(x);
     if (!n) return this.notFound(x);
     const dir = opts.dir || 'out';
-    const kinds = new Set(opts.kinds && opts.kinds.length ? opts.kinds : ['calls']);
+    const kinds = new Set(opts.kinds && opts.kinds.length ? opts.kinds : ['call']);
     const maxDepth = opts.maxDepth || 6;
     const limit = opts.limit || 200;
     const seen = new Map([[n.id, { id: n.id, depth: 0, via: null, edge: null }]]);
@@ -370,7 +370,7 @@ class GraphTools {
       for (const id of frontier) {
         for (const e of (dir === 'out' ? this.out : this.inc).get(id) || []) {
           if (!kinds.has(e.kind)) continue;
-          const other = dir === 'out' ? e.t : e.s;
+          const other = dir === 'out' ? e.target : e.source;
           if (seen.has(other)) continue;
           seen.set(other, { id: other, depth, via: id, edge: e });
           next.push(other);
@@ -496,7 +496,7 @@ class GraphTools {
       }
     }
     if (!hits.length) return { text: `No lines match /${re.source}/.`, nodeIds: [], hits };
-    const text = hits.map(h => `${h.file}:${h.line} [${h.node ? this.ref(h.node.id) + ' ' + (h.node.qname || h.node.name) : '?'}] ${clip(h.text)}`).join('\n') + (total > hits.length ? `\n(${total - hits.length} more matches)` : '');
+    const text = hits.map(h => `${h.file}:${h.line} [${h.node ? this.ref(h.node.id) + ' ' + (h.node.qname || h.node.label) : '?'}] ${clip(h.text)}`).join('\n') + (total > hits.length ? `\n(${total - hits.length} more matches)` : '');
     return { text, nodeIds: [...new Set(hits.filter(h => h.node).map(h => h.node.id))], hits };
   }
 }

@@ -82,8 +82,8 @@ function computeLayout(vis) {
   // Sibling-level edges per container ('' = root).
   const sib = new Map();
   for (const e of vis.edges) {
-    const pa = ancestors(e.s).concat([e.s]);
-    const pb = ancestors(e.t).concat([e.t]);
+    const pa = ancestors(e.source).concat([e.source]);
+    const pb = ancestors(e.target).concat([e.target]);
     let i = 0;
     while (i < pa.length && i < pb.length && pa[i] === pb[i]) i++;
     if (i >= pa.length || i >= pb.length) continue;
@@ -399,8 +399,8 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
  * Returns {d, x1, y1, x2, y2, mx, my, len}: path, end points, mid point and length.
  */
 function edgeGeometry(e, abs, bend) {
-  const A = abs.get(e.s);
-  const B = abs.get(e.t);
+  const A = abs.get(e.source);
+  const B = abs.get(e.target);
   if (!A || !B) return null;
   const a = anchor(A);
   const b = anchor(B);
@@ -486,7 +486,7 @@ function edgeStubs(e, g, cls, width) {
     edges:
       `<g class="${cls} stub" data-edge="${esc(e.key)}"><path class="hit" d="M${g.x1.toFixed(1)},${g.y1.toFixed(1)} L${sx.toFixed(1)},${sy.toFixed(1)}"/><path class="line" ${styleW} d="M${g.x1.toFixed(1)},${g.y1.toFixed(1)} L${sx.toFixed(1)},${sy.toFixed(1)}"/></g>` +
       `<g class="${cls} stub" data-edge="${esc(e.key)}"><path class="hit" d="M${tx.toFixed(1)},${ty.toFixed(1)} L${g.x2.toFixed(1)},${g.y2.toFixed(1)}"/><path class="line" ${styleW} d="M${tx.toFixed(1)},${ty.toFixed(1)} L${g.x2.toFixed(1)},${g.y2.toFixed(1)}" marker-end="url(#arrow-${e.kind})"/></g>`,
-    badges: badge('→ ' + name(e.t) + times, sx, sy, g.ux1, g.uy1, e.t) + badge(name(e.s) + times + ' →', tx, ty, -g.ux2, -g.uy2, e.s)
+    badges: badge('→ ' + name(e.target) + times, sx, sy, g.ux1, g.uy1, e.target) + badge(name(e.source) + times + ' →', tx, ty, -g.ux2, -g.uy2, e.source)
   };
 }
 
@@ -513,7 +513,7 @@ function render() {
     const info = KIND_INFO[n.kind] || { glyph: '?' };
     const hasKids = kids(id).length > 0;
     const cls = ['node', 'k-' + n.kind];
-    if (n.kind === 'file' && n.header) cls.push('header');
+    if (n.kind === 'file' && n.fileRole === 'header') cls.push('header');
     if (b.container) cls.push('container');
     if (id === (related && related.root)) cls.push('selected');
     if (S.selected === id) cls.push('selected');
@@ -556,7 +556,7 @@ function render() {
         <text class="label bold" x="28" y="${HEADER_H / 2 + 4}">${label}</text>${badge}${toggle}</g>`;
     } else {
       leaves += `<g class="${cls.join(' ')}" data-id="${esc(id)}" transform="translate(${b.x},${b.y})">
-        <rect class="box" width="${b.w}" height="${b.h}" rx="${n.kind === 'function' || n.kind === 'method' ? 14 : 5}"/>
+        <rect class="box" width="${b.w}" height="${b.h}" rx="${n.kind === 'function' || n.kind === 'prototype' || n.kind === 'method' ? 14 : 5}"/>
         <text class="glyph" x="14" y="${b.h / 2 + 4}">${info.glyph}</text>
         <text class="label" x="28" y="${b.h / 2 + 4}">${label}</text>${countBadge}${badge}${codeBtn}${toggle}</g>`;
     }
@@ -580,14 +580,14 @@ function render() {
   const drawn = [];
   for (const e of vis.edges) {
     const isRel = !!(related && related.edges.has(e.key));
-    const isHl = !!(hl && hl.has(e.s) && hl.has(e.t));
+    const isHl = !!(hl && hl.has(e.source) && hl.has(e.target));
     const chosen = S.selectedEdge === e.key;
     const show = S.edgeMode === 'all' || isRel || isHl || chosen || (bundledMode && !e.bundleKey);
     if (show) drawn.push({ e, isRel, isHl });
   }
   if (bundledMode) for (const b of vis.bundles) drawn.push({ e: b, isRel: false, isHl: false });
   // Reciprocal pairs are bent apart.
-  const pairKey = e => (e.s < e.t ? e.s + '|' + e.t : e.t + '|' + e.s);
+  const pairKey = e => (e.source < e.target ? e.source + '|' + e.target : e.target + '|' + e.source);
   const pairCount = new Map();
   for (const { e } of drawn) pairCount.set(pairKey(e), (pairCount.get(pairKey(e)) || 0) + 1);
   const pairSeen = new Map();
@@ -601,7 +601,7 @@ function render() {
     const idx = pairSeen.get(k) || 0;
     pairSeen.set(k, idx + 1);
     let bend = 0;
-    if (total > 1) bend = (idx - (total - 1) / 2) * 0.8 * (e.s < e.t ? 1 : -1);
+    if (total > 1) bend = (idx - (total - 1) / 2) * 0.8 * (e.source < e.target ? 1 : -1);
     const g = edgeGeometry(e, abs, bend);
     if (!g) continue;
     const cls = ['edge', 'ek-' + e.kind];
@@ -654,7 +654,7 @@ function renderPath() {
   let s = '';
   let labels = '';
   for (let i = 1; i < groups.length; i++) {
-    const g = edgeGeometry({ s: groups[i - 1].rep, t: groups[i].rep }, abs, 0.35);
+    const g = edgeGeometry({ source: groups[i - 1].rep, target: groups[i].rep }, abs, 0.35);
     if (!g) continue;
     const hop = groups[i].steps[0];
     const cls = ['exec-path'];

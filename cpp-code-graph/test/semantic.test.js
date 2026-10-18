@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { buildGraph } = require('../src/graph/builder');
+const { buildGraph } = require('../src/graph/builder.ts');
 const { GraphTools } = require('../src/ai/graphTools');
 const { candidatePairs, buildConceptPrompt, parseConcepts, buildPairPrompt, parsePairs, buildSemanticLayer, currentLayer } = require('../src/ai/semantic');
 
@@ -56,7 +56,7 @@ function fakeModel(opts = {}) {
     ]
   );
   // Synthetic: legacy names, validators, same shape, similar names; pairs already linked are skipped.
-  const fn = (name, extra) => ({ id: 'fn:' + name, kind: 'function', name, qname: name, file: 'a.c', line: 1, ...extra });
+  const fn = (name, extra) => ({ id: 'fn:' + name, kind: 'function', label: name, qname: name, file: 'a.c', line: 1, ...extra });
   const sg = {
     nodes: [
       fn('parse_config', { signature: 'int parse_config(const char* p)', id: 'fn:parse_config(constchar*)' }),
@@ -70,8 +70,8 @@ function fakeModel(opts = {}) {
       fn('est')
     ],
     edges: [
-      { s: 'fn:handle', t: 'fn:is_valid_order', kind: 'calls', n: 1 },
-      { s: 'fn:handle', t: 'fn:ship_order', kind: 'calls', n: 1 }
+      { source: 'fn:handle', target: 'fn:is_valid_order', kind: 'call', n: 1 },
+      { source: 'fn:handle', target: 'fn:ship_order', kind: 'call', n: 1 }
     ]
   };
   const sp = candidatePairs(new GraphTools(sg)).map(p => [p.a.slice(3), p.b.slice(3), p.hint]);
@@ -107,7 +107,7 @@ function fakeModel(opts = {}) {
     prov
   );
   const e = res.get('P2');
-  assert.deepStrictEqual([e.s, e.t, e.label, e.symmetric, e.confidence], [id('geo::Rectangle::area'), id('geo::Circle::area'), 'alternative implementation of', true, 0.85]);
+  assert.deepStrictEqual([e.source, e.target, e.label, e.symmetric, e.confidence], [id('geo::Rectangle::area'), id('geo::Circle::area'), 'alternative implementation of', true, 0.85]);
   assert.deepStrictEqual(e.evidence, { file: 'src/shape.cpp', line: 17, quote: 'double Circle::area() const' }, 'a quote one line off is found');
   assert.deepStrictEqual([e.provenance.model, e.provenance.time, typeof e.provenance.sKey], ['Fake', 1, 'string']);
   assert.strictEqual(res.get('P1'), null, 'checked, nothing found');

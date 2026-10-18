@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { buildGraph } = require('../src/graph/builder');
+const { buildGraph } = require('../src/graph/builder.ts');
 const { GraphTools, tokenize } = require('../src/ai/graphTools');
 
 const root = path.join(__dirname, '..', 'sample');
@@ -60,16 +60,16 @@ const refsIn = text => text.match(/N\d+/g) || [];
   r = tools.getNode('Canvas');
   assert.match(r.text, /class geo::Canvas/);
   assert.match(r.text, /contains \(5\)/);
-  assert.match(r.text, /incoming: uses/);
+  assert.match(r.text, /incoming: type-use/);
   r = tools.getNode('log_init');
   assert.match(r.text, /declared: c\/logger.h:15/);
   assert.match(r.text, /defined: c\/logger.c:16/);
   assert.match(tools.getNode('nope_nothing').text, /No node matches/);
 
   // neighbors: direction, kind filter, call sites and uncertainty.
-  r = tools.neighbors('render', { dir: 'out', kinds: ['calls'] });
+  r = tools.neighbors('render', { dir: 'out', kinds: ['call'] });
   assert.ok(r.nodeIds.includes(id('log_message')));
-  assert.ok(r.rows.every(x => x.outgoing && x.e.kind === 'calls'));
+  assert.ok(r.rows.every(x => x.outgoing && x.e.kind === 'call'));
   assert.match(r.text, /at src\/canvas.cpp:17/);
   assert.match(r.text, /uncertain/);
   r = tools.neighbors('render', { dir: 'in' });
@@ -82,22 +82,22 @@ const refsIn = text => text.match(/N\d+/g) || [];
     assert.strictEqual(p[0], id('main'));
     assert.strictEqual(p[p.length - 1], id('plot'));
     assert.strictEqual(p[1], render.id);
-    for (let i = 1; i < p.length; i++) assert.ok(graph.edges.some(e => e.kind === 'calls' && e.s === p[i - 1] && e.t === p[i]), 'path hop is a real edge');
+    for (let i = 1; i < p.length; i++) assert.ok(graph.edges.some(e => e.kind === 'call' && e.source === p[i - 1] && e.target === p[i]), 'path hop is a real edge');
   }
   assert.match(r.text, /-\?->/, 'uncertain hop is marked');
   r = tools.callPaths('main', 'logger.c', { k: 5 });
   // The three direct calls first, then longer chains such as main -> render -> log_message.
-  assert.deepStrictEqual(new Set(r.paths.slice(0, 3).map(p => tools.nodes.get(p[1]).name)), new Set(['log_init', 'log_message', 'log_close']));
+  assert.deepStrictEqual(new Set(r.paths.slice(0, 3).map(p => tools.nodes.get(p[1]).label)), new Set(['log_init', 'log_message', 'log_close']));
   assert.ok(r.paths.slice(0, 3).every(p => p.length === 2));
   assert.ok(r.paths.slice(3).every(p => p.length > 2));
-  assert.ok(r.paths.some(p => p[1] === render.id && tools.nodes.get(p[2]).name === 'log_message'));
+  assert.ok(r.paths.some(p => p[1] === render.id && tools.nodes.get(p[2]).label === 'log_message'));
   r = tools.callPaths('plot', 'main');
   assert.strictEqual(r.paths.length, 0);
   assert.match(r.text, /No call chain/);
 
   // reach: callers with depth, and the depth limit.
   r = tools.reach('plot', { dir: 'in' });
-  const depth = new Map(r.items.map(x => [tools.nodes.get(x.id).name, x.depth]));
+  const depth = new Map(r.items.map(x => [tools.nodes.get(x.id).label, x.depth]));
   assert.strictEqual(depth.get('line'), 1);
   assert.strictEqual(depth.get('render'), 2);
   assert.strictEqual(depth.get('main'), 3);
@@ -106,7 +106,7 @@ const refsIn = text => text.match(/N\d+/g) || [];
   r = tools.reach('main', { dir: 'out' });
   assert.ok(r.nodeIds.includes(id('plot')) && r.nodeIds.includes(id('level_name')));
   r = tools.reach('Shape', { dir: 'in', kinds: ['inherits'] });
-  assert.deepStrictEqual(new Set(r.items.map(x => tools.nodes.get(x.id).name)), new Set(['Circle', 'Rectangle']));
+  assert.deepStrictEqual(new Set(r.items.map(x => tools.nodes.get(x.id).label)), new Set(['Circle', 'Rectangle']));
 
   // readCode: definitions with line numbers, file heads, ranges, truncation.
   r = await tools.readCode('render');
@@ -127,7 +127,7 @@ const refsIn = text => text.match(/N\d+/g) || [];
   assert.ok(r.nodeIds.includes(id('plot')) && r.nodeIds.includes(id('pixelCount')));
   r = await tools.grep('fopen(', { file: 'c/' });
   assert.strictEqual(r.hits.length, 1);
-  assert.strictEqual(r.hits[0].node.name, 'log_init');
+  assert.strictEqual(r.hits[0].node.label, 'log_init');
   assert.strictEqual((await tools.grep('LOG_', { maxHits: 2 })).hits.length, 2);
 
   // Source files are read once.

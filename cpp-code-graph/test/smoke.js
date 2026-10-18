@@ -21,6 +21,8 @@ class CancellationTokenSource {
 const vscode = {
   Uri,
   ViewColumn: { One: 1, Beside: -2 },
+  // Declared up front: TypeScript's `import * as vscode` sees only the keys that exist when it is imported.
+  ProgressLocation: { Notification: 15 },
   Position: class { constructor(l, c) { this.line = l; this.character = c; } },
   Range: class { constructor(a, b) { this.start = a; this.end = b; } },
   CancellationTokenSource,
@@ -53,6 +55,7 @@ const vscode = {
   },
   window: {
     activeTextEditor: null,
+    createOutputChannel: () => ({ appendLine() {}, show() {}, dispose() {} }),
     createWebviewPanel() {
       return {
         webview: {
@@ -77,9 +80,10 @@ const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...rest) { return req === 'vscode' ? 'vscode' : origResolve.call(this, req, ...rest); };
 require.cache.vscode = { id: 'vscode', filename: 'vscode', loaded: true, exports: vscode };
 
-const ext = require('../src/extension');
+// --bundle checks out/extension.js, what VS Code loads, instead of the sources.
+const ext = require(process.argv.includes('--bundle') ? '../out/extension.js' : '../src/extension.ts');
 const workspaceStore = new Map();
-const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname, '..')), workspaceState: { get: k => workspaceStore.get(k), update: async (k, v) => workspaceStore.set(k, v) } };
+const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname, '..')), asAbsolutePath: p => path.join(__dirname, '..', p), workspaceState: { get: k => workspaceStore.get(k), update: async (k, v) => workspaceStore.set(k, v) } };
 (async () => {
   ext.activate(context);
   const expected = ['codeGraph.open', 'codeGraph.refresh', 'codeGraph.revealInGraph', 'codeGraph.ask'];
@@ -89,21 +93,21 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   await onMessage({ type: 'ready' });
   await new Promise(r => setTimeout(r, 50));
   const g = posted.find(m => m.type === 'graph');
-  if (!g || g.graph.nodes.length < 40) throw new Error('graph not posted');
-  await onMessage({ type: 'open', file: 'src/main.cpp', line: 10 });
+  if (!g || g.data.nodes.length < 40) throw new Error('graph not posted');
+  await onMessage({ type: 'openLocation', file: 'src/main.cpp', line: 10 });
   // Inline code: the webview asks for a line range and gets it back.
-  await onMessage({ type: 'getSource', reqId: 1, file: 'src/main.cpp', start: 10, end: 12, side: 'target' });
+  await onMessage({ type: 'getSource', reqId: 1, file: 'src/main.cpp', start: 10, end: 12 });
   const src = posted.find(m => m.type === 'source' && m.reqId === 1);
   if (!src || src.error || src.startLine !== 10 || src.lines.length !== 3 || src.truncated || !src.lines[0].includes('main')) throw new Error('bad source reply ' + JSON.stringify(src));
-  await onMessage({ type: 'getSource', reqId: 2, file: 'src/main.cpp', start: 1, end: 100000, side: 'target' });
+  await onMessage({ type: 'getSource', reqId: 2, file: 'src/main.cpp', start: 1, end: 100000 });
   const big = posted.find(m => m.type === 'source' && m.reqId === 2);
   if (!big || big.error || big.lines.length > 200 || big.startLine !== 1) throw new Error('bad capped source reply ' + JSON.stringify(big && { n: big.lines && big.lines.length, e: big.error }));
-  await onMessage({ type: 'getSource', reqId: 3, file: 'nope/missing.cpp', start: 1, end: 5, side: 'target' });
+  await onMessage({ type: 'getSource', reqId: 3, file: 'nope/missing.cpp', start: 1, end: 5 });
   const missing = posted.find(m => m.type === 'source' && m.reqId === 3);
   if (!missing || !missing.error) throw new Error('missing file should report an error');
   await onMessage({ type: 'ask', question: 'How does rendering work?', focus: null });
   const res = posted.find(m => m.type === 'aiResult');
-  if (!res || res.highlight.length !== 2 || res.path.length !== 2 || !res.answer.includes('[[fn:main')) throw new Error('bad ai result ' + JSON.stringify(res));
+  if (!res || res.highlight.length !== 2 || res.path.length !== 2 || !res.answer.includes('[[function:src/main.cpp:main')) throw new Error('bad ai result ' + JSON.stringify(res));
   console.log('posted:', posted.map(m => m.type).join(', '));
   console.log('answer:', res.answer);
 
@@ -121,10 +125,10 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
       const intro = messages[0].content;
       const mainRef = /(N\d+) function main/.exec(intro)[1];
       const parts = [];
-      if (requests.length === 1) parts.push(new vscode.LanguageModelTextPart('Checking main.'), new vscode.LanguageModelToolCallPart('t1', 'neighbors', { node: mainRef, direction: 'out', kinds: ['calls'] }));
+      if (requests.length === 1) parts.push(new vscode.LanguageModelTextPart('Checking main.'), new vscode.LanguageModelToolCallPart('t1', 'neighbors', { node: mainRef, direction: 'out', kinds: ['call'] }));
       else {
         const results = messages[messages.length - 1].content;
-        const renderRef = /calls -> (N\d+) method geo::Canvas::render/.exec(results[0].content[0].value)[1];
+        const renderRef = /call -> (N\d+) method geo::Canvas::render/.exec(results[0].content[0].value)[1];
         parts.push(new vscode.LanguageModelToolCallPart('t2', 'finish', { answer: `[[${mainRef}]] calls [[${renderRef}]].`, path: [mainRef, renderRef], evidence: [{ file: 'src/main.cpp', line: 15, claim: 'render call' }], confidence: 'high' }));
       }
       return { stream: (async function* () { yield* parts; })() };
@@ -141,7 +145,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (sent[1].role !== 'assistant' || sent[1].content[0].value !== 'Checking main.' || sent[1].content[1].callId !== 't1') throw new Error('assistant turn not replayed');
   if (!(sent[2].content[0] instanceof vscode.LanguageModelToolResultPart) || sent[2].content[0].callId !== 't1') throw new Error('tool result not sent');
   if (steps.length !== 3 || steps[1].step.tool !== 'read_code' || steps[2].step.tool !== 'neighbors' || !steps[2].step.nodeIds.length) throw new Error('bad steps ' + JSON.stringify(steps));
-  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || tres.confidenceReason !== 'read the code of 2 of the 2 functions it cites; 1 cited source line' || !tres.answer.startsWith('[[fn:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
+  if (!tres || tres.path.length !== 2 || tres.hops[0].inferred || tres.evidence.length !== 1 || tres.confidence !== 'high' || tres.confidenceReason !== 'read the code of 2 of the 2 functions it cites; 1 cited source line' || !tres.answer.startsWith('[[function:src/main.cpp:main')) throw new Error('bad agent result ' + JSON.stringify(tres));
   console.log('agent answer:', tres.answer);
 
   // Stop during an investigation still ends with a (cancelled) result, so the panel is not left busy.
@@ -218,7 +222,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
     }
   };
   vscode.lm.selectChatModels = async () => [summaryModel];
-  const renderId = g.graph.nodes.find(n => n.qname === 'geo::Canvas::render').id;
+  const renderId = g.data.nodes.find(n => n.qname === 'geo::Canvas::render').id;
   const lastSummary = () => posted.filter(m => m.type === 'summary').pop();
   await onMessage({ type: 'getSummary', id: renderId });
   let sm = lastSummary();
@@ -229,7 +233,7 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   await onMessage({ type: 'getSummary', id: renderId, refresh: true });
   if (!lastSummary().summary || lastSummary().summary.purpose !== 'Draws every shape (2).' || summaryCalls !== 2) throw new Error('refresh did not regenerate ' + JSON.stringify(lastSummary()));
   // Changed code (a new hash) is summarized again.
-  g.graph.nodes.find(n => n.id === renderId).hash = 'edited';
+  g.data.nodes.find(n => n.id === renderId).hash = 'edited';
   await onMessage({ type: 'getSummary', id: renderId });
   if (lastSummary().cached || summaryCalls !== 3) throw new Error('changed code was served from the cache');
   if (workspaceStore.get('codeGraph.aiSummaries')[renderId].summary.purpose !== 'Draws every shape (3).') throw new Error('summary not saved');
@@ -247,35 +251,12 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
 
   // Change impact, computed in the extension host.
   posted.length = 0;
-  const logId = g.graph.nodes.find(n => n.name === 'log_message').id;
+  const logId = g.data.nodes.find(n => n.label === 'log_message').id;
   await onMessage({ type: 'impact', id: logId, changeType: 'remove' });
   const imp = posted.find(m => m.type === 'impactResult');
   if (!imp || imp.id !== logId || imp.requested !== 'remove' || imp.changeType !== 'remove' || imp.summary.high < 2 || !imp.labels.relations.caller) throw new Error('bad impact ' + JSON.stringify(imp && imp.summary));
   await onMessage({ type: 'impact', id: 'dir:src', changeType: 'remove' });
   if (!posted.filter(m => m.type === 'impactResult').pop().error) throw new Error('folder impact should be refused');
-
-  // The AI check of an impact prediction.
-  const checker = {
-    name: 'Checker', family: 'mock', maxInputTokens: 100000,
-    async sendRequest(messages) {
-      const refs = messages[0].content.match(/^A\d+(?= )/gm) || [];
-      return { text: (async function* () { yield JSON.stringify(refs.map(ref => ({ ref, verdict: 'breaks', reason: 'two arguments' }))); })() };
-    }
-  };
-  vscode.lm.selectChatModels = async () => [checker];
-  posted.length = 0;
-  await onMessage({ type: 'impactAI', id: logId, changeType: 'signature', description: 'add a parameter' });
-  const air = posted.find(m => m.type === 'impactAIResult');
-  if (!air || air.error || air.asked !== 2 || air.verdicts.length !== 2 || air.verdicts.some(v => v.verdict !== 'breaks' || v.score < 85) || air.model !== 'Checker') throw new Error('bad impact AI ' + JSON.stringify(air));
-  vscode.lm.selectChatModels = async () => [];
-  posted.length = 0;
-  await onMessage({ type: 'impactAI', id: logId, changeType: 'signature' });
-  if (!/No language model/.test(posted.find(m => m.type === 'impactAIResult').error)) throw new Error('missing model not reported for impact');
-  // Checking against edits reads git: the sample is committed, so nothing has changed.
-  posted.length = 0;
-  await onMessage({ type: 'impactCheck', id: logId, changeType: 'signature' });
-  const chk = posted.find(m => m.type === 'impactCheckResult');
-  if (!chk || chk.error || chk.compared !== 'symbols' || chk.targetChanged !== null || chk.changedCount !== 0 || chk.hits.length !== 0) throw new Error('bad impact check ' + JSON.stringify(chk));
 
   // The AI layer: built with a progress notification, saved, and merged into the graph the webview gets.
   const infos = [];
@@ -300,11 +281,11 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   const layerState = workspaceStore.get('codeGraph.semanticLayer');
   if (!layerState || layerState.model !== 'Layer' || layerState.edges.length !== 2 || !Object.keys(layerState.concepts).length) throw new Error('layer not saved ' + JSON.stringify(layerState && { m: layerState.model, e: layerState.edges.length }));
   const lg = posted.filter(m => m.type === 'graph').pop();
-  if (!lg || lg.graph.edges.filter(e => e.kind === 'semantic').length !== 2 || !lg.graph.concepts[renderId] || lg.graph.semantic.edges !== 2) throw new Error('layer not in the posted graph');
+  if (!lg || lg.data.edges.filter(e => e.kind === 'semantic').length !== 2 || !lg.data.concepts[renderId] || lg.data.semantic.edges !== 2) throw new Error('layer not in the posted graph');
   if (posted.filter(m => m.type === 'semanticBuilding').map(m => m.busy).join() !== 'true,false') throw new Error('busy state not posted');
   if (!/concepts? tagged/.test(infos.pop())) throw new Error('no summary message');
   // The workspace graph itself is not changed: impact and summaries see only the code's relationships.
-  if (g.graph.edges.some(e => e.kind === 'semantic')) throw new Error('semantic edges leaked into the workspace graph');
+  if (g.data.edges.some(e => e.kind === 'semantic')) throw new Error('semantic edges leaked into the workspace graph');
   // A second build asks nothing.
   const before = semCalls;
   await onMessage({ type: 'buildSemantic' });

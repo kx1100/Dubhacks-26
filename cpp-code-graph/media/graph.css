@@ -554,8 +554,8 @@ code {
 .k-file.header { --kc: var(--c-header); }
 .k-namespace { --kc: var(--c-namespace); }
 .k-class, .k-struct, .k-union { --kc: var(--c-class); }
-.k-enum { --kc: var(--c-enum); }
-.k-function { --kc: var(--c-function); }
+.k-enum, .k-typedef { --kc: var(--c-enum); }
+.k-function, .k-prototype { --kc: var(--c-function); }
 .k-method { --kc: var(--c-method); }
 .k-field { --kc: var(--c-field); }
 .k-variable { --kc: var(--c-variable); }
@@ -598,13 +598,13 @@ code {
 .edge.uncertain .line {
   stroke-dasharray: 5 4;
 }
-.ek-calls { --ec: var(--e-calls); }
-.ek-includes { --ec: var(--e-includes); }
+.ek-call { --ec: var(--e-calls); }
+.ek-include { --ec: var(--e-includes); }
 .ek-inherits { --ec: var(--e-inherits); }
 .ek-overrides { --ec: var(--e-overrides); }
-.ek-uses { --ec: var(--e-uses); }
+.ek-type-use { --ec: var(--e-uses); }
 .edge.ek-overrides .line { stroke-dasharray: 2 3; }
-.edge.ek-uses .line { stroke-dasharray: 1 3; }
+.edge.ek-type-use .line { stroke-dasharray: 1 3; }
 .edge.st-added .line { stroke: var(--green); opacity: 1; stroke-width: 2px; }
 .edge.st-removed .line { stroke: var(--red); opacity: 1; stroke-width: 2px; stroke-dasharray: 6 4; }
 
@@ -624,7 +624,7 @@ code {
   stroke-width: 2px;
 }
 .legend-line.ek-overrides { stroke-dasharray: 2 3; }
-.legend-line.ek-uses { stroke-dasharray: 1 3; }
+.legend-line.ek-type-use { stroke-dasharray: 1 3; }
 
 .exec-path {
   fill: none;
@@ -1008,9 +1008,9 @@ ul.rel li {
 :root {
   --e-pairs: var(--green);
 }
-.ek-pairs { --ec: var(--e-pairs); }
-.edge.ek-pairs .line { stroke-dasharray: 8 3 2 3; }
-.legend-line.ek-pairs { stroke-dasharray: 8 3 2 3; }
+.ek-pair { --ec: var(--e-pairs); }
+.edge.ek-pair .line { stroke-dasharray: 8 3 2 3; }
+.legend-line.ek-pair { stroke-dasharray: 8 3 2 3; }
 
 /* Inline code cards */
 

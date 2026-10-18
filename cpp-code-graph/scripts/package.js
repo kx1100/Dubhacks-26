@@ -8,9 +8,10 @@ const { execFileSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-const include = ['package.json', 'README.md', 'src', 'media'];
-// The webview sources are bundled into media/dist/graph.js; only the bundle ships.
+const include = ['package.json', 'README.md', 'out', 'media'];
+// The extension (out/extension.js) and the webview (media/dist/graph.js) ship as bundles, not sources.
 const skip = ['media/webview', 'media/layout.js'].map(p => path.join(root, p));
+require('./build-extension').build({ sourcemap: false, minify: true });
 require('./build-webview').build({ sourcemap: false, minify: true });
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'vsix-'));
 const ext = path.join(stage, 'extension');
@@ -47,7 +48,7 @@ fs.writeFileSync(path.join(stage, 'extension.vsixmanifest'), `<?xml version="1.0
 </PackageManifest>
 `);
 fs.writeFileSync(path.join(stage, '[Content_Types].xml'), `<?xml version="1.0" encoding="utf-8"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".json" ContentType="application/json" /><Default Extension=".vsixmanifest" ContentType="text/xml" /><Default Extension=".js" ContentType="application/javascript" /><Default Extension=".css" ContentType="text/css" /><Default Extension=".svg" ContentType="image/svg+xml" /><Default Extension=".md" ContentType="text/markdown" /><Default Extension=".txt" ContentType="text/plain" /></Types>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension=".json" ContentType="application/json" /><Default Extension=".vsixmanifest" ContentType="text/xml" /><Default Extension=".js" ContentType="application/javascript" /><Default Extension=".css" ContentType="text/css" /><Default Extension=".svg" ContentType="image/svg+xml" /><Default Extension=".md" ContentType="text/markdown" /><Default Extension=".txt" ContentType="text/plain" /><Default Extension=".wasm" ContentType="application/wasm" /></Types>
 `);
 
 const out = path.join(root, `${pkg.name}-${pkg.version}.vsix`);

@@ -16,7 +16,9 @@ const MAX_STEPS = 12;
 const PRELOAD_MAX = 5; // functions whose source is given up front
 const PRELOAD_LINES = 60; // lines of each
 const RESULT_CHARS = 6000; // longest tool result sent back to the model
-const EDGE_KINDS = ['calls', 'includes', 'inherits', 'overrides', 'uses', 'pairs', 'semantic'];
+const EDGE_KINDS = ['call', 'include', 'inherits', 'overrides', 'type-use', 'pair', 'semantic'];
+// How the investigation timeline names each kind ("Outgoing calls of ...").
+const EDGE_WORDS = { call: 'calls', include: 'includes', inherits: 'inherits', overrides: 'overrides', 'type-use': 'type uses', pair: 'pairs', semantic: 'AI-inferred links' };
 
 const nodeArg = { type: 'string', description: 'Node ref such as N12 (preferred), or a qualified name such as geo::Canvas::render, or a file name.' };
 const kindsArg = { type: 'array', items: { type: 'string', enum: EDGE_KINDS }, description: 'Relationship kinds to follow. Omit for all.' };
@@ -29,7 +31,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Words or identifiers, e.g. "log message" or "pixelCount".' },
-        kinds: { type: 'array', items: { type: 'string', enum: ['function', 'method', 'class', 'struct', 'union', 'enum', 'variable', 'field', 'file', 'namespace'] } },
+        kinds: { type: 'array', items: { type: 'string', enum: ['function', 'prototype', 'method', 'class', 'struct', 'union', 'enum', 'variable', 'field', 'file', 'namespace'] } },
         k: { type: 'number', description: 'Maximum results (default 10).' }
       },
       required: ['query']
@@ -117,7 +119,7 @@ const TOOLS = [
 const SYSTEM = `You are investigating a C/C++ codebase for a developer who sees it as an interactive graph of files, classes and functions.
 Do not guess: use the tools to find symbols, follow relationships and read code, and check each idea against the source before relying on it.
 Nodes are identified by refs such as N12. Pass refs to tools, and refer to nodes in your answer as [[N12]] so they become clickable.
-Relationships: calls (function -> function), includes (file -> header), inherits (derived -> base), overrides (method -> base method), uses (code -> type), pairs (header -> source file implementing it), semantic (AI-inferred, when built: alternative implementations, replacements, validators; check them against the code).
+Relationships: call (function -> function), include (file -> header), inherits (derived -> base), overrides (method -> base method), type-use (code -> type), pair (header -> source file implementing it), semantic (AI-inferred, when built: alternative implementations, replacements, validators; check them against the code).
 Calls marked "uncertain" were matched by name only. Calls through function pointers, callbacks and macros are missing from the graph; grep can find them.
 Work efficiently: you have at most ${MAX_STEPS} rounds of tool calls, and several independent calls can be made in one round. Stop as soon as you can answer well.
 Then call finish. Write for someone who may be new to the code: clear and concise (under 250 words unless needed).
@@ -196,16 +198,16 @@ async function investigate(graph, question, opts) {
   const first = tools.searchSymbols(question, { k: 8 });
   step({ tool: 'search_symbols', args: { query: question }, summary: `Searched the question → ${first.nodeIds.length} symbol${first.nodeIds.length === 1 ? '' : 's'}`, nodeIds: first.nodeIds });
   const focus = opts.focusId && tools.nodes.get(opts.focusId);
-  const mains = graph.nodes.filter(n => n.kind === 'function' && n.name === 'main');
+  const mains = graph.nodes.filter(n => n.kind === 'function' && n.label === 'main');
   const files = graph.nodes.filter(n => n.kind === 'file').length;
   const modeTools = toolsFor(opts.mode);
   let callTree = '';
   if (opts.mode === 'path') {
-    const entry = focus && (focus.kind === 'function' || focus.kind === 'method') ? focus : mains[0];
+    const entry = focus && (focus.kind === 'function' || focus.kind === 'prototype' || focus.kind === 'method') ? focus : mains[0];
     if (entry) callTree = 'Calls reachable from ' + tools.label(entry) + ' (up to 3 levels; read the bodies for the order):\n' + tools.reach(entry.id, { dir: 'out', maxDepth: 3, limit: 60 }).text;
   }
   // The source of the likeliest functions up front, so the model starts from code instead of guesses.
-  const isFn = n => !!n && (n.kind === 'function' || n.kind === 'method');
+  const isFn = n => !!n && (n.kind === 'function' || n.kind === 'prototype' || n.kind === 'method');
   const candidates = [];
   for (const n of [isFn(focus) ? focus : null, opts.mode === 'path' ? mains[0] : null, ...first.nodeIds.map(id => tools.nodes.get(id))]) {
     if (isFn(n) && !candidates.includes(n.id)) candidates.push(n.id);
@@ -316,7 +318,7 @@ async function runTool(tools, name, a) {
 function summarize(tools, name, a, r) {
   const nm = x => {
     const n = tools.resolve(x);
-    return n ? n.qname || n.name : String(x);
+    return n ? n.qname || n.label : String(x);
   };
   const count = r.nodeIds ? r.nodeIds.length : 0;
   if (r.missing) return `Could not find ${String(a.node || a.from || a.to || '')}`;
@@ -328,7 +330,7 @@ function summarize(tools, name, a, r) {
     case 'neighbors': {
       const n = r.rows ? r.rows.length : 0;
       const what = a.direction === 'in' ? 'Incoming' : a.direction === 'out' ? 'Outgoing' : 'All';
-      return `${what} ${a.kinds && a.kinds.length ? a.kinds.join('/') : 'relationships'} of ${nm(a.node)} (${n})`;
+      return `${what} ${a.kinds && a.kinds.length ? a.kinds.map(k => EDGE_WORDS[k] || k).join('/') : 'relationships'} of ${nm(a.node)} (${n})`;
     }
     case 'call_paths':
       return `Call paths ${nm(a.from)} → ${nm(a.to)} (${r.paths ? r.paths.length : 0})`;
@@ -433,16 +435,16 @@ function buildRoutes(tools, raw, toId, list) {
 }
 
 function hopInfo(tools, from, to) {
-  const calls = (tools.out.get(from) || []).filter(e => e.kind === 'calls');
+  const calls = (tools.out.get(from) || []).filter(e => e.kind === 'call');
   const site = e => (e.sites && e.sites[0]) || null;
-  let e = calls.find(x => x.t === to);
+  let e = calls.find(x => x.target === to);
   if (e) return { inferred: false, uncertain: !!e.uncertain, site: site(e) };
   // Virtual dispatch: `from` calls a base method that `to` overrides.
-  const bases = new Set((tools.out.get(to) || []).filter(x => x.kind === 'overrides').map(x => x.t));
-  e = calls.find(x => bases.has(x.t));
+  const bases = new Set((tools.out.get(to) || []).filter(x => x.kind === 'overrides').map(x => x.target));
+  e = calls.find(x => bases.has(x.target));
   if (e) return { inferred: false, dispatch: true, uncertain: true, site: site(e) };
   // Returning to the caller.
-  e = (tools.out.get(to) || []).find(x => x.kind === 'calls' && x.t === from);
+  e = (tools.out.get(to) || []).find(x => x.kind === 'call' && x.target === from);
   if (e) return { inferred: false, returns: true, site: null };
   return { inferred: true, site: null };
 }
@@ -460,7 +462,7 @@ function hopInfo(tools, from, to) {
 function rateConfidence(tools, { referenced, routes, evidence }, rating, ctx) {
   const callable = id => {
     const n = tools.nodes.get(id);
-    return !!n && (n.kind === 'function' || n.kind === 'method');
+    return !!n && (n.kind === 'function' || n.kind === 'prototype' || n.kind === 'method');
   };
   const cited = new Set([...referenced, ...routes.flatMap(r => r.steps.map(s => s.id))].filter(callable));
   const reads = [...cited].filter(id => ctx.readIds.has(id)).length;

@@ -67,7 +67,7 @@ async function main() {
       // What the renderer drew: node ids / edge keys having a class (see media/webview/renderer.js).
       window.drawnNodes = cls => cg.renderer.debug.nodes(cls);
       window.drawnEdges = cls => cg.renderer.debug.edges(cls);
-      window.nodeByName = name => cg.S.graph.nodes.find(n => n.name === name);
+      window.nodeByName = name => cg.S.graph.nodes.find(n => n.label === name);
       window.fire = (el, type, extra) => el.dispatchEvent(new PointerEvent(type, Object.assign({ bubbles: true, cancelable: true, button: 0, pointerId: 1 }, extra)));
       window.click = el => { fire(el, 'pointerdown'); fire(el, 'pointerup'); el.dispatchEvent(new MouseEvent('click', { bubbles: true })); };
       window.waitFor = async (fn, ms = 2000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await new Promise(r => setTimeout(r, 30)); } return false; };
@@ -76,10 +76,10 @@ async function main() {
     await open('');
 
     // 1. Pairing edges exist in the data and are on by default.
-    const pairs = await evaluate(`cg.S.graph.edges.filter(e => e.kind === 'pairs').map(e => e.s.replace('file:', '') + '>' + e.t.replace('file:', '') + ':' + e.n)`);
-    assert(pairs.includes('c/logger.h>c/logger.c:3'), 'logger.h pairs with logger.c: ' + pairs);
+    const pairs = await evaluate(`cg.S.graph.edges.filter(e => e.kind === 'pair').map(e => e.source.replace('file:', '') + '>' + e.target.replace('file:', '') + ':' + e.n)`);
+    assert(pairs.includes('c/logger.h>c/logger.c:4'), 'logger.h pairs with logger.c: ' + pairs);
     assert(pairs.some(p => p.startsWith('include/geo/shape.h>src/shape.cpp')), 'shape.h pairs with shape.cpp');
-    assert.strictEqual(await evaluate('cg.S.edgeOn.pairs'), true);
+    assert.strictEqual(await evaluate('cg.S.edgeOn.pair'), true);
 
     // 2. A free function remembers where its prototype is.
     const decl = await evaluate(`JSON.stringify((({ declFile, declLine, file, line }) => ({ declFile, declLine, file, line }))(nodeByName('log_init')))`);
@@ -110,8 +110,8 @@ async function main() {
 
     // 5. Clicking a line asks the extension to open that line.
     await evaluate(`window.__sent.length = 0; document.querySelector('.codecard .cl[data-line="18"]').dispatchEvent(new MouseEvent('click', { bubbles: true })); true`);
-    const opened = await evaluate(`JSON.stringify(window.__sent.find(m => m.type === 'open'))`);
-    assert.deepStrictEqual(pick(JSON.parse(opened), ['type', 'file', 'line']), { type: 'open', file: 'c/logger.c', line: 18 });
+    const opened = await evaluate(`JSON.stringify(window.__sent.find(m => m.type === 'openLocation'))`);
+    assert.deepStrictEqual(pick(JSON.parse(opened), ['type', 'file', 'line']), { type: 'openLocation', file: 'c/logger.c', line: 18 });
 
     // 6. A node cannot be expanded and show code at once.
     await evaluate(`cg.toggleCode(nodeByName('Shape').id, true); cg.toggle(nodeByName('Shape').id, true); true`);
@@ -155,10 +155,10 @@ async function main() {
     await evaluate("cg.applyPreset('structure'); true");
     assert.strictEqual(await evaluate('cg.S.direction'), 'TB');
     await evaluate("cg.applyPreset('includes'); true");
-    assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify(Object.keys(cg.S.edgeOn).filter(k => cg.S.edgeOn[k]).sort())")), ['includes', 'pairs']);
+    assert.deepStrictEqual(JSON.parse(await evaluate("JSON.stringify(Object.keys(cg.S.edgeOn).filter(k => cg.S.edgeOn[k]).sort())")), ['include', 'pair']);
 
     // 11. A hand-made filter change marks the view as Custom.
-    await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"uses\"]').click(); true");
+    await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"type-use\"]').click(); true");
     assert.strictEqual(await evaluate('cg.S.preset'), 'custom');
 
     // 12. On a bigger project long arrows become labelled stubs that jump to the other end.
@@ -258,7 +258,7 @@ async function main() {
     // Evidence links open the cited line.
     await openDrawer('how');
     await evaluate("window.__sent.length = 0; document.querySelector('#answer .evidence a.site').click(); true");
-    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/canvas.cpp', line: 18 });
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'openLocation'))")), ['file', 'line']), { file: 'src/canvas.cpp', line: 18 });
     // Explain from the details panel always uses Ask.
     await evaluate(`cg.reveal(nodeByName('log_init').id, { center: false }); window.__sent.length = 0; document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="explain"]').click(); true`);
     assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'ask'))")).mode, 'ask');
@@ -326,7 +326,7 @@ async function main() {
       shared: [...document.querySelectorAll('ol.route .rs')].map(li => li.classList.contains('shared')),
       conds: [...document.querySelectorAll('ol.route .rc')].map(e => e.textContent),
       tags: [...document.querySelectorAll('ol.route .tag')].map(e => e.textContent),
-      path: cg.S.highlight.path.map(id => cg.S.nodes.get(id).name),
+      path: cg.S.highlight.path.map(id => cg.S.nodes.get(id).label),
       label: cg.S.highlight.label,
       segs: [...document.querySelectorAll('#layerPath .exec-path')].map(p => [...p.classList].filter(c => c !== 'exec-path').join(' ')),
       steps: [...document.querySelectorAll('#layerPath .step')].map(g => [...g.classList].filter(c => c !== 'step').join(' ')),
@@ -398,7 +398,7 @@ async function main() {
     sm = await sum();
     assert.deepStrictEqual([sm.text.slice(0, 3), sm.count], ['(2)', 2]);
     // After a rescan the old summary stays visible while it is checked again.
-    await evaluate("window.postMessage({ type: 'graph', mode: 'workspace', graph: window.__FIXTURES.graph, title: 'sample' }, '*'); true");
+    await evaluate("window.postMessage({ type: 'graph', data: window.__FIXTURES.graph, title: 'sample' }, '*'); true");
     await new Promise(r => setTimeout(r, 60));
     assert.match(await evaluate("(document.querySelector('#aiSum p') || {}).textContent || ''"), /^\(2\)/, 'no flicker to Summarizing');
     assert(await evaluate("waitFor(() => window.__summaryCount === 3 && /^\\(3\\)/.test((document.querySelector('#aiSum p') || {}).textContent || ''))"), 'checked again after the rescan');
@@ -424,8 +424,8 @@ async function main() {
       predict: /prediction/.test(document.querySelector('.impsum .pill').title),
       shown: (document.getElementById('impShow') || {}).ariaPressed || document.getElementById('impShow') && document.getElementById('impShow').getAttribute('aria-pressed'),
       label: cg.S.highlight && cg.S.highlight.label,
-      high: drawnNodes('imp-high').map(id => cg.S.nodes.get(id).name),
-      target: drawnNodes('imp-target').map(id => cg.S.nodes.get(id).name)
+      high: drawnNodes('imp-high').map(id => cg.S.nodes.get(id).label),
+      target: drawnNodes('imp-target').map(id => cg.S.nodes.get(id).label)
     })`).then(JSON.parse);
     let im = await impact();
     assert.strictEqual(im.tab, 'impact');
@@ -521,7 +521,7 @@ function ensureLargeFixture() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-large-'));
   const run = (...args) => require('child_process').execFileSync(process.execPath, args, { stdio: 'ignore' });
   run(path.join(__dirname, 'gen-large.js'), path.join(tmp, 'proj'), '40');
-  run(path.join(__dirname, 'make-fixtures.js'), path.join(tmp, 'proj'), tmp);
+  run(path.join(__dirname, 'run.js'), path.join(__dirname, 'make-fixtures.js'), path.join(tmp, 'proj'), tmp);
   fs.copyFileSync(path.join(tmp, 'fixtures.js'), target);
   fs.rmSync(tmp, { recursive: true, force: true });
 }

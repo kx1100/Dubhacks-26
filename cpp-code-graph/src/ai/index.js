@@ -14,7 +14,7 @@ const { investigate } = require('./agent');
 
 const SYSTEM = `You help a developer understand a C/C++ codebase that is shown to them as an interactive graph.
 You get a list of graph nodes. Each line is: <id> <kind> <qualified name> @<file:line> | <relation>:<target ids>.
-Relations: calls, includes, inherits, overrides, uses. Some function bodies are included as source.
+Relations: call, include, inherits, overrides, type-use. Some function bodies are included as source.
 Answer the question clearly for someone who may be new to the code. Be concise (under 250 words unless needed).
 Whenever you mention a node, reference it inline as [[N12]] (its id in double square brackets) so it can be highlighted.
 After the answer, output exactly two final lines:
@@ -54,10 +54,10 @@ async function askSingleShot(graph, question, preferred, opts) {
   const snippetBudget = Math.floor(budget * 0.3);
   for (const n of ctx.ranked.slice(0, 40)) {
     if (n.kind !== 'function' && n.kind !== 'method') continue;
-    if (relevance(n, ctx.qterms) === 0 && n.id !== opts.focusId && n.name !== 'main') continue;
+    if (relevance(n, ctx.qterms) === 0 && n.id !== opts.focusId && n.label !== 'main') continue;
     const code = await readSnippet(opts.readSource, n, 80);
     if (!code) continue;
-    const block = `// ${ctx.short.get(n.id)} ${n.qname || n.name} (${n.defFile || n.file}:${n.defLine || n.line})\n${code}`;
+    const block = `// ${ctx.short.get(n.id)} ${n.qname || n.label} (${n.defFile || n.file}:${n.defLine || n.line})\n${code}`;
     if (snippetChars + block.length > snippetBudget) break;
     snippets.push(block);
     snippetChars += block.length;
@@ -69,7 +69,7 @@ async function askSingleShot(graph, question, preferred, opts) {
     `Graph nodes (${ctx.lines.length} shown${ctx.omitted ? ', ' + ctx.omitted + ' less relevant omitted' : ''}):`,
     ctx.lines.join('\n'),
     snippets.length ? '\nSource of relevant functions:\n```cpp\n' + snippets.join('\n\n') + '\n```' : '',
-    focusNode ? `\nThe developer currently has ${ctx.short.get(focusNode.id)} (${focusNode.qname || focusNode.name}) selected.` : '',
+    focusNode ? `\nThe developer currently has ${ctx.short.get(focusNode.id)} (${focusNode.qname || focusNode.label}) selected.` : '',
     '\nQuestion: ' + question
   ].join('\n');
 

@@ -13,8 +13,8 @@
 const { contentKey } = require('./summaries');
 const { tokenize } = require('./graphTools');
 
-const TAGGABLE = new Set(['function', 'method', 'class', 'struct', 'union', 'enum']);
-const CALLABLE = new Set(['function', 'method']);
+const TAGGABLE = new Set(['function', 'prototype', 'method', 'class', 'struct', 'union', 'enum']);
+const CALLABLE = new Set(['function', 'prototype', 'method']);
 const ELEMENTS_PER_REQUEST = 30;
 const LINES_PER_ELEMENT = 8;
 const PAIRS_PER_REQUEST = 12;
@@ -51,7 +51,7 @@ function baseName(name) {
 function shapeOf(n) {
   const params = /\(([^)]*)\)/.exec(n.id);
   if (!params || !n.signature) return null;
-  const ret = n.signature.split(n.name + '(')[0].trim();
+  const ret = n.signature.split(n.label + '(')[0].trim();
   return ret + '(' + params[1] + ')';
 }
 
@@ -64,9 +64,9 @@ function candidatePairs(tools, max = MAX_PAIRS) {
   const nodes = [...tools.nodes.values()].filter(n => TAGGABLE.has(n.kind) && n.status !== 'removed');
   const label = id => {
     const n = tools.nodes.get(id);
-    return n.qname || n.name;
+    return n.qname || n.label;
   };
-  const linked = (a, b) => (tools.out.get(a) || []).some(e => e.t === b && (e.kind === 'overrides' || e.kind === 'inherits')) || (tools.out.get(b) || []).some(e => e.t === a && (e.kind === 'overrides' || e.kind === 'inherits'));
+  const linked = (a, b) => (tools.out.get(a) || []).some(e => e.target === b && (e.kind === 'overrides' || e.kind === 'inherits')) || (tools.out.get(b) || []).some(e => e.target === a && (e.kind === 'overrides' || e.kind === 'inherits'));
   const found = new Map();
   const add = (a, b, hint, weight) => {
     if (a === b || linked(a, b)) return;
@@ -83,31 +83,31 @@ function candidatePairs(tools, max = MAX_PAIRS) {
   for (const n of nodes) {
     const inc = tools.inc.get(n.id) || [];
     // Methods overriding the same base method, classes deriving from the same base.
-    const over = inc.filter(e => e.kind === 'overrides').map(e => e.s);
+    const over = inc.filter(e => e.kind === 'overrides').map(e => e.source);
     if (over.length > 1) allPairs(over, 'both override ' + label(n.id), 3);
-    const derived = inc.filter(e => e.kind === 'inherits').map(e => e.s);
+    const derived = inc.filter(e => e.kind === 'inherits').map(e => e.source);
     if (derived.length > 1) allPairs(derived, 'both derive from ' + label(n.id), 3);
   }
   // Same name apart from legacy or version markers.
   const byBase = new Map();
   for (const n of nodes) {
-    const b = baseName(n.name);
-    if (b && b !== n.name.toLowerCase()) (byBase.get(b) || byBase.set(b, []).get(b)).push(n.id);
+    const b = baseName(n.label);
+    if (b && b !== n.label.toLowerCase()) (byBase.get(b) || byBase.set(b, []).get(b)).push(n.id);
   }
   for (const n of nodes) {
-    const group = byBase.get(n.name.toLowerCase());
+    const group = byBase.get(n.label.toLowerCase());
     if (group) for (const other of group) add(n.id, other, 'names differ only by a version or legacy marker', 3);
   }
   for (const group of byBase.values()) if (group.length > 1) allPairs(group, 'names differ only by a version or legacy marker', 3);
   // Validators and what their callers do next.
   for (const n of nodes) {
-    if (!CALLABLE.has(n.kind) || !VALIDATOR.test(n.name)) continue;
+    if (!CALLABLE.has(n.kind) || !VALIDATOR.test(n.label)) continue;
     let added = 0;
     for (const e of tools.inc.get(n.id) || []) {
-      if (e.kind !== 'calls') continue;
-      for (const sib of tools.out.get(e.s) || []) {
-        if (sib.kind !== 'calls' || sib.t === n.id || added >= 3) continue;
-        add(n.id, sib.t, `both called by ${label(e.s)}, which checks with ${n.name}`, 2);
+      if (e.kind !== 'call') continue;
+      for (const sib of tools.out.get(e.source) || []) {
+        if (sib.kind !== 'call' || sib.target === n.id || added >= 3) continue;
+        add(n.id, sib.target, `both called by ${label(e.source)}, which checks with ${n.label}`, 2);
         added++;
       }
     }
@@ -115,7 +115,7 @@ function candidatePairs(tools, max = MAX_PAIRS) {
   // Same parameter and return types (not trivial ones).
   const byShape = new Map();
   for (const n of nodes) {
-    if (!CALLABLE.has(n.kind) || n.name.startsWith('~') || (tools.inc.get(n.id) || []).some(e => e.kind === 'overrides') || (tools.out.get(n.id) || []).some(e => e.kind === 'overrides')) continue;
+    if (!CALLABLE.has(n.kind) || n.label.startsWith('~') || (tools.inc.get(n.id) || []).some(e => e.kind === 'overrides') || (tools.out.get(n.id) || []).some(e => e.kind === 'overrides')) continue;
     const s = shapeOf(n);
     if (s && !/\(\s*(const)?\s*\)$/.test(s)) (byShape.get(s) || byShape.set(s, []).get(s)).push(n.id);
   }
@@ -123,12 +123,12 @@ function candidatePairs(tools, max = MAX_PAIRS) {
   // Similar names.
   const callables = nodes.filter(n => CALLABLE.has(n.kind));
   // Word parts only (tokenize also yields the whole name, e.g. load_user_profile).
-  const toks = new Map(callables.map(n => [n.id, new Set(tokenize(n.name).filter(t => t.length > 2 && !t.includes('_')))]));
+  const toks = new Map(callables.map(n => [n.id, new Set(tokenize(n.label).filter(t => t.length > 2 && !t.includes('_')))]));
   for (let i = 0; i < callables.length && i < 800; i++) {
     for (let j = i + 1; j < callables.length && j < 800; j++) {
       const A = toks.get(callables[i].id);
       const B = toks.get(callables[j].id);
-      if (A.size < 2 || B.size < 2 || callables[i].name === callables[j].name) continue;
+      if (A.size < 2 || B.size < 2 || callables[i].label === callables[j].label) continue;
       let shared = 0;
       for (const t of A) if (B.has(t)) shared++;
       if (shared / (A.size + B.size - shared) >= 0.5) add(callables[i].id, callables[j].id, 'similar names', 1);
@@ -166,7 +166,7 @@ async function buildConceptPrompt(tools, file, elements, known) {
     const ref = 'E' + (i + 1);
     refs.set(ref, n.id);
     const code = await codeOf(tools, n, LINES_PER_ELEMENT);
-    blocks.push(`${ref} ${n.kind} ${n.qname || n.name}${n.signature ? ' — ' + n.signature : ''}${code ? '\n```cpp\n' + code + '\n```' : ''}`);
+    blocks.push(`${ref} ${n.kind} ${n.qname || n.label}${n.signature ? ' — ' + n.signature : ''}${code ? '\n```cpp\n' + code + '\n```' : ''}`);
   }
   const prompt = `You are labeling the parts of a C/C++ codebase with the concepts they belong to: the feature, workflow or responsibility each one serves, such as "logging", "shape rendering", "config parsing" or "memory management".
 Give each element 1 or 2 short lowercase concepts of 1-3 words. Use the same concept for elements that serve the same purpose.${known.length ? '\nPrefer these concepts, already used elsewhere in the codebase, when they fit: ' + known.slice(0, 60).join(', ') + '.' : ''}
@@ -207,7 +207,7 @@ async function buildPairPrompt(tools, pairs) {
       const n = tools.nodes.get(id);
       const r = tools.codeRange(n);
       const code = await codeOf(tools, n, PAIR_LINES);
-      return `${letter}: ${n.kind} ${n.qname || n.name} @${r.file}:${r.start}${code ? '\n```cpp\n' + code + '\n```' : ''}`;
+      return `${letter}: ${n.kind} ${n.qname || n.label} @${r.file}:${r.start}${code ? '\n```cpp\n' + code + '\n```' : ''}`;
     };
     blocks.push(`${ref} (candidate because ${p.hint})\n${await side('A', p.a)}\n${await side('B', p.b)}`);
   }
@@ -270,7 +270,7 @@ async function parsePairs(tools, text, refs, provenance) {
       continue;
     }
     results.set(ref, {
-      s, t, kind: 'semantic', relation, label: RELATIONS[relation].label, symmetric: !!RELATIONS[relation].symmetric,
+      id: `semantic:${s}->${t}`, kind: 'semantic', source: s, target: t, relation, label: RELATIONS[relation].label, symmetric: !!RELATIONS[relation].symmetric,
       confidence: Math.round(confidence * 100) / 100, reason: String(v.reason || '').trim().slice(0, 200), evidence,
       hint: pair.hint, provenance: { ...provenance, sKey: contentKey(tools, tools.nodes.get(s)), tKey: contentKey(tools, tools.nodes.get(t)) }
     });
@@ -290,8 +290,8 @@ function currentLayer(tools, state) {
     if (n && c.tags.length && contentKey(tools, n) === c.key) concepts[id] = c.tags;
   }
   for (const e of state.edges || []) {
-    const s = tools.nodes.get(e.s);
-    const t = tools.nodes.get(e.t);
+    const s = tools.nodes.get(e.source);
+    const t = tools.nodes.get(e.target);
     if (s && t && contentKey(tools, s) === e.provenance.sKey && contentKey(tools, t) === e.provenance.tKey) edges.push(e);
   }
   return { concepts, edges };
@@ -382,7 +382,7 @@ async function buildSemanticLayer(tools, prev, complete, opts = {}) {
     stats.pairsReused++;
   }
   for (const e of prevEdges) {
-    const key = e.s < e.t ? e.s + '|' + e.t : e.t + '|' + e.s;
+    const key = e.source < e.target ? e.source + '|' + e.target : e.target + '|' + e.source;
     if (!askKeys.has(key)) state.edges.push(e);
   }
   for (let i = 0; i < toAsk.length; i += PAIRS_PER_REQUEST) {

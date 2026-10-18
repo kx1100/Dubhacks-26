@@ -5,7 +5,7 @@
 import { $ } from './shell.js';
 import { EDGE_MODES, PRESETS } from './constants.js';
 import { vscode, S, persist } from './state.js';
-import { canShowCode, codeKey, codeSide, requestSource, onSource, refreshCode } from './code.js';
+import { canShowCode, codeKey, requestSource, onSource, refreshCode } from './code.js';
 import { setGraph, rebuildTree, kids, ancestors, nearestInTree, applyPresetSettings, presetExpansion, computeVisible, nodeLabel, descendantsOf } from './model.js';
 import { renderViewControls, renderFilters, renderStats, setStatus, renderHighlightBar, runSearch, renderSearchList, gotoMatch } from './panels/toolbar.js';
 import { renderDetails } from './panels/details.js';
@@ -160,7 +160,7 @@ export function openSource(id, which) {
   const useProto = which === 'decl' && n.declFile;
   const file = useProto ? n.declFile : useDef ? n.defFile : n.file;
   const line = useProto ? n.declLine : useDef ? n.defLine : n.line;
-  vscode.postMessage({ type: 'open', file, line: line || 1, side: n.status === 'removed' ? 'base' : 'target' });
+  vscode.postMessage({ type: 'openLocation', file, line: line || 1 });
 }
 
 export function expandLevel() {
@@ -200,8 +200,8 @@ export function focusArea(id) {
   const insideSet = new Set(inside);
   const keep = new Set([target]);
   for (const u of inside) {
-    for (const e of S.out.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.t)) keep.add(nearestInTree(e.t));
-    for (const e of S.inc.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.s)) keep.add(nearestInTree(e.s));
+    for (const e of S.out.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.target)) keep.add(nearestInTree(e.target));
+    for (const e of S.inc.get(u) || []) if (S.edgeOn[e.kind] && !insideSet.has(e.source)) keep.add(nearestInTree(e.source));
   }
   const wasOpen = S.expanded.has(target);
   S.expanded = new Set();
@@ -227,8 +227,8 @@ export function trace(id, direction) {
     for (const u of frontier) {
       const list = direction === 'out' ? S.out.get(u) : S.inc.get(u);
       for (const e of list || []) {
-        if (e.kind !== 'calls' && e.kind !== 'overrides') continue;
-        const v = direction === 'out' ? e.t : e.s;
+        if (e.kind !== 'call' && e.kind !== 'overrides') continue;
+        const v = direction === 'out' ? e.target : e.source;
         if (!seen.has(v)) {
           seen.add(v);
           order.push(v);
@@ -239,7 +239,7 @@ export function trace(id, direction) {
     frontier = next;
   }
   const n = S.nodes.get(id);
-  setHighlight({ ids: seen, path: [], label: (direction === 'out' ? 'Everything called from ' : 'Everything that calls ') + n.name + ' (' + (seen.size - 1) + ')' });
+  setHighlight({ ids: seen, path: [], label: (direction === 'out' ? 'Everything called from ' : 'Everything that calls ') + n.label + ' (' + (seen.size - 1) + ')' });
 }
 
 export function setHighlight(h) {
@@ -293,7 +293,7 @@ renderer.on('toggleCode', id => {
 renderer.on('openLine', (id, line) => {
   const n = S.nodes.get(id);
   const entry = n && S.code.get(codeKey(n));
-  if (entry && entry.file) vscode.postMessage({ type: 'open', file: entry.file, line, side: codeSide(n), preserveFocus: false });
+  if (entry && entry.file) vscode.postMessage({ type: 'openLocation', file: entry.file, line, preserveFocus: false });
 });
 renderer.on('reveal', id => reveal(id));
 renderer.on('edgeSelect', key => {
@@ -427,19 +427,22 @@ window.addEventListener('message', ev => {
       // The code may have changed: check again (the extension answers from its cache when it hasn't).
       for (const e of S.summaries.values()) e.stale = true;
       if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
-      loadGraph(m.graph, m.mode, m.title);
+      loadGraph(m.data, 'workspace', m.title);
       renderSuggestions();
       break;
-    case 'status':
-      setStatus(m.text, m.busy, m.error);
+    case 'loading':
+      setStatus(m.message, true);
+      break;
+    case 'error':
+      setStatus(m.message, false, true);
       break;
     case 'source': {
       const id = onSource(m);
       if (id) renderer.setCodeCard(id);
       break;
     }
-    case 'reveal':
-      reveal(m.id);
+    case 'focus':
+      reveal(m.nodeId);
       break;
     case 'aiStart':
       // Keep the mode when this confirms a question asked from the panel; questions from the command palette use Ask.

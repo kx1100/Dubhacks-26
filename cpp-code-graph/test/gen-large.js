@@ -1,6 +1,6 @@
 // Writes a synthetic C project for looking at big graphs and timing the layout:
 //   node test/gen-large.js [dir] [modules]     (default: test/large, 40 modules)
-// Then: node test/make-fixtures.js <dir> test   and open the harness with ?large.
+// Then: node test/run.js test/make-fixtures.js <dir> test   and open the harness with ?large.
 // Modules are spread over folders; each calls a few functions of other modules.
 const fs = require('fs');
 const path = require('path');

@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { buildGraph } = require('../src/graph/builder');
+const { buildGraph } = require('../src/graph/builder.ts');
 const { investigate, validate, toolsFor, TOOLS } = require('../src/ai/agent');
 const pick = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k]]));
 const { GraphTools } = require('../src/ai/graphTools');
@@ -50,7 +50,7 @@ const call = (name, input) => ({ name, input });
   // 1. A normal investigation: search, follow, read, then finish.
   const steps = [];
   let llm = scripted([
-    { text: 'Let me look at rendering.', calls: [call('search_symbols', { query: 'render' }), call('neighbors', { node: ref('render'), direction: 'out', kinds: ['calls'] })] },
+    { text: 'Let me look at rendering.', calls: [call('search_symbols', { query: 'render' }), call('neighbors', { node: ref('render'), direction: 'out', kinds: ['call'] })] },
     { calls: [call('read_code', { node: ref('render') })] },
     {
       calls: [
@@ -84,7 +84,7 @@ const call = (name, input) => ({ name, input });
   assert.strictEqual(round2[1].role, 'assistant');
   assert.strictEqual(round2[1].calls.length, 2);
   assert.deepStrictEqual(round2[2].results.map(r => r.id), round2[1].calls.map(c => c.id));
-  assert.match(round2[2].results[1].text, /calls -> N\d+ function log_message/);
+  assert.match(round2[2].results[1].text, /call -> N\d+ function log_message/);
   assert.match(llm.seen[2].messages[4].results[0].text, /void Canvas::render/);
 
   // Steps: the head start plus one per tool call, with readable summaries.
@@ -253,13 +253,13 @@ const call = (name, input) => ({ name, input });
   // 8. Virtual dispatch: a call to the base method reaches an override.
   const vg = {
     nodes: [
-      { id: 'fn:run', kind: 'function', name: 'run', qname: 'run', file: 'a.cpp', line: 1 },
-      { id: 'fn:Base::go', kind: 'method', name: 'go', qname: 'Base::go', file: 'a.cpp', line: 5 },
-      { id: 'fn:Impl::go', kind: 'method', name: 'go', qname: 'Impl::go', file: 'a.cpp', line: 9 }
+      { id: 'fn:run', kind: 'function', label: 'run', qname: 'run', file: 'a.cpp', line: 1 },
+      { id: 'fn:Base::go', kind: 'method', label: 'go', qname: 'Base::go', file: 'a.cpp', line: 5 },
+      { id: 'fn:Impl::go', kind: 'method', label: 'go', qname: 'Impl::go', file: 'a.cpp', line: 9 }
     ],
     edges: [
-      { s: 'fn:run', t: 'fn:Base::go', kind: 'calls', n: 1, sites: [{ file: 'a.cpp', line: 2 }] },
-      { s: 'fn:Impl::go', t: 'fn:Base::go', kind: 'overrides', n: 1 }
+      { source: 'fn:run', target: 'fn:Base::go', kind: 'call', n: 1, sites: [{ file: 'a.cpp', line: 2 }] },
+      { source: 'fn:Impl::go', target: 'fn:Base::go', kind: 'overrides', n: 1 }
     ]
   };
   const v = validate(new GraphTools(vg), { answer: '', path: ['run', 'Impl::go'] });

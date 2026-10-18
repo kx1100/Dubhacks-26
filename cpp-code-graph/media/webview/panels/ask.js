@@ -27,7 +27,7 @@ export function renderSuggestions() {
   const el = $('suggestions');
   const list = SUGGESTIONS.slice();
   const n = S.selected && S.nodes.get(S.selected);
-  if (n) list.push([`Explain ${n.name}`, `Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask', n.id]);
+  if (n) list.push([`Explain ${n.label}`, `Explain ${n.kind} ${n.qname || n.label}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask', n.id]);
   const shown = list.length > 3 ? list.slice(0, 2).concat(list.slice(-1)) : list;
   el.innerHTML = `<span class="muted">Try</span>${shown.map(([label, q], i) => `<a class="sugg" data-sugg="${i}" title="${esc(q)}">${esc(label)}</a>`).join('')}`;
   el.querySelectorAll('[data-sugg]').forEach(a => {
@@ -59,7 +59,7 @@ export function renderOpts() {
   if (n) {
     const on = S.contextOff !== n.id;
     const info = KIND_INFO[n.kind] || { glyph: '?' };
-    ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.name)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
+    ctx = `<button id="ctxChip" class="opt ctx" aria-pressed="${on}" style="--kc: var(--c-${n.kind})" title="${esc(on ? `${n.qname || n.label} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.label} with the question as context`)}"><span class="g">${info.glyph}</span><span class="lbl">${esc(n.label)}</span>${on ? '<span class="x">✕</span>' : ''}</button>`;
   }
   const count = (S.history || []).length;
   const hist = count ? `<button id="historyBtn" class="iconbtn" aria-expanded="${!!S.historyOpen}" title="Recent questions">⟲ ${count}</button>` : '';

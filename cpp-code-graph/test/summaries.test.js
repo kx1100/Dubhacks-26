@@ -2,7 +2,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { buildGraph } = require('../src/graph/builder');
+const { buildGraph } = require('../src/graph/builder.ts');
 const { GraphTools } = require('../src/ai/graphTools');
 const { canSummarize, contentKey, buildPrompt, parseSummary, summarize } = require('../src/ai/summaries');
 

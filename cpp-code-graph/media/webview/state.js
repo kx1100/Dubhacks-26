@@ -20,7 +20,7 @@ export const S = {
   code: new Map(), // "id|side" -> {status, lines, html, startLine, file, truncated, error}
   selected: saved.selected || null,
   selectedEdge: null,
-  edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true }, saved.edgeOn || {}),
+  edgeOn: Object.assign({ call: true, inherits: true, overrides: true, include: true, 'type-use': false, pair: true }, saved.edgeOn || {}),
   showFields: saved.showFields !== undefined ? saved.showFields : true,
   showNamespaces: saved.showNamespaces !== undefined ? saved.showNamespaces : true,
   showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,

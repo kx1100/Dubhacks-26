@@ -13,7 +13,7 @@ function terms(question) {
 }
 
 function relevance(n, qterms) {
-  const name = (n.name || '').toLowerCase();
+  const name = (n.label || '').toLowerCase();
   const q = (n.qname || n.file || '').toLowerCase();
   let s = 0;
   for (const t of qterms) {
@@ -38,17 +38,17 @@ function buildContext(graph, question, focusId, budgetChars) {
   const out = new Map();
   for (const e of graph.edges) {
     if (e.status === 'removed') continue;
-    if (!short.has(e.s) || !short.has(e.t)) continue;
-    let m = out.get(e.s);
-    if (!m) out.set(e.s, (m = {}));
-    (m[e.kind] || (m[e.kind] = [])).push(short.get(e.t));
+    if (!short.has(e.source) || !short.has(e.target)) continue;
+    let m = out.get(e.source);
+    if (!m) out.set(e.source, (m = {}));
+    (m[e.kind] || (m[e.kind] = [])).push(short.get(e.target));
   }
   const degree = new Map();
   for (const e of graph.edges) {
-    degree.set(e.s, (degree.get(e.s) || 0) + 1);
-    degree.set(e.t, (degree.get(e.t) || 0) + 1);
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
   }
-  const score = n => relevance(n, qterms) * 10 + Math.min(5, (degree.get(n.id) || 0) / 4) + (n.id === focusId ? 100 : 0) + (n.name === 'main' ? 3 : 0);
+  const score = n => relevance(n, qterms) * 10 + Math.min(5, (degree.get(n.id) || 0) / 4) + (n.id === focusId ? 100 : 0) + (n.label === 'main' ? 3 : 0);
   const ranked = listed.slice().sort((a, b) => score(b) - score(a));
 
   const line = n => {
@@ -58,7 +58,7 @@ function buildContext(graph, question, focusId, budgetChars) {
       .join(' ');
     const loc = (n.defFile || n.file || '') + ':' + (n.defLine || n.line || 1);
     const status = n.status ? ' [' + n.status + ']' : '';
-    return short.get(n.id) + ' ' + n.kind + ' ' + (n.qname || n.name) + status + ' @' + loc + (relText ? ' | ' + relText : '');
+    return short.get(n.id) + ' ' + n.kind + ' ' + (n.qname || n.label) + status + ' @' + loc + (relText ? ' | ' + relText : '');
   };
   const lines = [];
   let used = 0;

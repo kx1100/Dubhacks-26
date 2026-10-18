@@ -27,8 +27,8 @@ export function setGraph(graph, mode, title) {
   S.out = new Map();
   S.inc = new Map();
   for (const e of graph.edges) {
-    push(S.out, e.s, e);
-    push(S.inc, e.t, e);
+    push(S.out, e.source, e);
+    push(S.inc, e.target, e);
   }
 
   // Expansion state: keep it across refreshes, restore saved state on first
@@ -84,7 +84,7 @@ export function rebuildTree() {
     const rb = (KIND_INFO[nb.kind] || {}).rank || 9;
     if (na.kind === 'dir' || na.kind === 'file' || nb.kind === 'dir' || nb.kind === 'file') {
       if (ra !== rb) return ra - rb;
-      return na.name.localeCompare(nb.name);
+      return na.label.localeCompare(nb.label);
     }
     if (na.file !== nb.file) return (na.file || '').localeCompare(nb.file || '');
     return (na.line || 0) - (nb.line || 0);
@@ -195,14 +195,14 @@ export function computeVisible() {
   for (const e of S.graph.edges) {
     if (!S.edgeOn[e.kind]) continue;
     if (e.uncertain && !S.showUncertain) continue;
-    const s = repOf(e.s);
-    const t = repOf(e.t);
+    const s = repOf(e.source);
+    const t = repOf(e.target);
     if (!s || !t || s === t) continue;
     if (isAncestor(s, t) || isAncestor(t, s)) continue;
     const key = s + '\u0001' + t + '\u0001' + e.kind;
     let a = agg.get(key);
     if (!a) {
-      a = { key, s, t, kind: e.kind, count: 0, raw: [], uncertain: true, statuses: new Set() };
+      a = { key, source: s, target: t, kind: e.kind, count: 0, raw: [], uncertain: true, statuses: new Set() };
       agg.set(key, a);
     }
     a.count += e.n || 1;
@@ -229,18 +229,18 @@ export function bundleEdges(edges) {
   const groups = new Map();
   for (const e of edges) {
     e.bundleKey = null;
-    const pa = ancestors(e.s).concat([e.s]);
-    const pb = ancestors(e.t).concat([e.t]);
+    const pa = ancestors(e.source).concat([e.source]);
+    const pb = ancestors(e.target).concat([e.target]);
     let i = 0;
     while (i < pa.length && i < pb.length && pa[i] === pb[i]) i++;
     if (i >= pa.length || i >= pb.length) continue;
     const cs = pa[i];
     const ct = pb[i];
-    if (cs === e.s && ct === e.t) continue; // siblings: nothing to bundle
+    if (cs === e.source && ct === e.target) continue; // siblings: nothing to bundle
     const key = 'bundle' + '\u0001' + cs + '\u0001' + ct + '\u0001' + e.kind;
     let b = groups.get(key);
     if (!b) {
-      b = { key, s: cs, t: ct, kind: e.kind, count: 0, raw: [], members: [], uncertain: true, statuses: new Set(), bundle: true };
+      b = { key, source: cs, target: ct, kind: e.kind, count: 0, raw: [], members: [], uncertain: true, statuses: new Set(), bundle: true };
       groups.set(key, b);
     }
     b.count += e.count;
@@ -272,7 +272,7 @@ export function findEdge(key) {
 }
 
 export function nodeLabel(n) {
-  return n.name || '(unnamed)';
+  return n.label || '(unnamed)';
 }
 
 export function descendantsOf(id) {
@@ -305,10 +305,10 @@ export function relatedSets() {
     return false;
   };
   for (const e of vis.edges) {
-    if (isUnder(e.s) || isUnder(e.t)) {
+    if (isUnder(e.source) || isUnder(e.target)) {
       edges.add(e.key);
-      nodes.add(e.s);
-      nodes.add(e.t);
+      nodes.add(e.source);
+      nodes.add(e.target);
     }
   }
   // Keep ancestors of related nodes visible as context.

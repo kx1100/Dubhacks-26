@@ -38,7 +38,7 @@ export function requestSource(n, force) {
   // On a refresh the old text stays visible until the new text arrives.
   const entry = cur && cur.status === 'ready' ? Object.assign({}, cur, { refreshing: true }) : { status: 'loading' };
   S.code.set(key, entry);
-  vscode.postMessage({ type: 'getSource', reqId, file: r.file, start: r.start || 1, end: r.end || 0, side: codeSide(n) });
+  vscode.postMessage({ type: 'getSource', reqId, file: r.file, start: r.start || 1, end: r.end || 0 });
   return entry;
 }
 

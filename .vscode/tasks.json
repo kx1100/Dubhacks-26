@@ -2,9 +2,9 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "build webview",
+      "label": "build",
       "type": "shell",
-      "command": "node scripts/build-webview.js",
+      "command": "node scripts/build-extension.js && node scripts/build-webview.js",
       "options": { "cwd": "${workspaceFolder}/cpp-code-graph" },
       "problemMatcher": []
     }

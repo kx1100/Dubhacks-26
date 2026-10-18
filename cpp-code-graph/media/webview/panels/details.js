@@ -16,9 +16,9 @@ export function nodeChip(id, extra) {
   const n = S.nodes.get(id);
   if (!n) return `<span class="chip missing">${esc(id)}</span>`;
   const info = KIND_INFO[n.kind] || { glyph: '?' };
-  const owner = n.kind === 'method' || n.kind === 'field' ? (S.nodes.get(n.parent) || {}).name : null;
-  const label = (owner ? owner + '::' : '') + n.name;
-  return `<a class="chip k-${n.kind}${n.status ? ' st-' + n.status : ''}" data-goto="${esc(id)}" title="${esc(n.qname || n.file || n.name)}"><span class="g">${info.glyph}</span>${esc(label)}${extra || ''}</a>`;
+  const owner = n.kind === 'method' || n.kind === 'field' ? (S.nodes.get(n.parent) || {}).label : null;
+  const label = (owner ? owner + '::' : '') + n.label;
+  return `<a class="chip k-${n.kind}${n.status ? ' st-' + n.status : ''}" data-goto="${esc(id)}" title="${esc(n.qname || n.file || n.label)}"><span class="g">${info.glyph}</span>${esc(label)}${extra || ''}</a>`;
 }
 
 export function locLink(file, line, side, label) {
@@ -29,7 +29,7 @@ export function relationSection(title, edges, endpoint, closed) {
   if (!edges.length) return '';
   const seen = new Map();
   for (const e of edges) {
-    const other = endpoint === 't' ? e.t : e.s;
+    const other = endpoint === 'target' ? e.target : e.source;
     const cur = seen.get(other);
     if (!cur) seen.set(other, { e, n: e.n || 1, uncertain: e.uncertain, status: e.status });
     else {
@@ -37,7 +37,7 @@ export function relationSection(title, edges, endpoint, closed) {
       cur.uncertain = cur.uncertain && e.uncertain;
     }
   }
-  const items = [...seen.entries()].sort((a, b) => (S.nodes.get(a[0]) || {}).name.localeCompare((S.nodes.get(b[0]) || {}).name));
+  const items = [...seen.entries()].sort((a, b) => (S.nodes.get(a[0]) || {}).label.localeCompare((S.nodes.get(b[0]) || {}).label));
   const shown = items.slice(0, 80);
   const html = shown
     .map(([other, info]) => {
@@ -58,16 +58,16 @@ export function describeNode(n) {
   const count = k => kids_.filter(c => c.kind === k).length;
   const out = S.out.get(n.id) || [];
   const inc = S.inc.get(n.id) || [];
-  const calls = new Set(out.filter(e => e.kind === 'calls').map(e => e.t)).size;
-  const callers = new Set(inc.filter(e => e.kind === 'calls').map(e => e.s)).size;
+  const calls = new Set(out.filter(e => e.kind === 'call').map(e => e.target)).size;
+  const callers = new Set(inc.filter(e => e.kind === 'call').map(e => e.source)).size;
   switch (n.kind) {
     case 'dir':
       return `A folder with ${kids_.length} item${kids_.length === 1 ? '' : 's'}.`;
     case 'file': {
-      const inclBy = inc.filter(e => e.kind === 'includes').length;
-      let s = `${n.header ? 'A header file' : 'A source file'} defining ${kids_.length} top-level item${kids_.length === 1 ? '' : 's'}${n.header ? `, included by ${inclBy} file${inclBy === 1 ? '' : 's'}` : ''}.`;
-      const impl = out.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.t) || {}).name).filter(Boolean);
-      const decl = inc.filter(e => e.kind === 'pairs').map(e => (S.nodes.get(e.s) || {}).name).filter(Boolean);
+      const inclBy = inc.filter(e => e.kind === 'include').length;
+      let s = `${n.fileRole === 'header' ? 'A header file' : 'A source file'} defining ${kids_.length} top-level item${kids_.length === 1 ? '' : 's'}${n.fileRole === 'header' ? `, included by ${inclBy} file${inclBy === 1 ? '' : 's'}` : ''}.`;
+      const impl = out.filter(e => e.kind === 'pair').map(e => (S.nodes.get(e.target) || {}).label).filter(Boolean);
+      const decl = inc.filter(e => e.kind === 'pair').map(e => (S.nodes.get(e.source) || {}).label).filter(Boolean);
       if (impl.length) s += ` Its declarations are implemented in ${impl.map(esc).join(', ')}.`;
       if (decl.length) s += ` It implements declarations from ${decl.map(esc).join(', ')}.`;
       return s;
@@ -85,8 +85,8 @@ export function describeNode(n) {
     }
     case 'function':
     case 'method': {
-      let s = n.kind === 'method' ? `A ${n.isPure ? 'pure virtual ' : n.isVirtual ? 'virtual ' : n.isStatic ? 'static ' : ''}member function of ${esc((S.nodes.get(n.parent) || {}).name || '?')}.` : `A ${n.isStatic ? 'file-local (static) ' : ''}free function.`;
-      if (n.name === 'main') s += ' This is the program entry point.';
+      let s = n.kind === 'method' ? `A ${n.isPure ? 'pure virtual ' : n.isVirtual ? 'virtual ' : n.isStatic ? 'static ' : ''}member function of ${esc((S.nodes.get(n.parent) || {}).label || '?')}.` : `A ${n.isStatic ? 'file-local (static) ' : ''}free function.`;
+      if (n.label === 'main') s += ' This is the program entry point.';
       s += ` It calls ${calls} known function${calls === 1 ? '' : 's'} and is called from ${callers} place${callers === 1 ? '' : 's'} in this codebase.`;
       if (!n.defFile && n.kind === 'method') s += ' No definition was found (declared only, defaulted, or defined elsewhere).';
       return s;
@@ -96,7 +96,7 @@ export function describeNode(n) {
     case 'namespace':
       return `A namespace block containing ${kids_.length} item${kids_.length === 1 ? '' : 's'}.`;
     case 'field':
-      return `A data member of ${esc((S.nodes.get(n.parent) || {}).name || '?')}.`;
+      return `A data member of ${esc((S.nodes.get(n.parent) || {}).label || '?')}.`;
     case 'variable':
       return 'A global (namespace-scope) variable.';
   }
@@ -152,11 +152,11 @@ export function renderDetails() {
         .join('')}${children.length > 150 ? `<li class="muted">… and ${children.length - 150} more</li>` : ''}</ul></details>`
     : '';
   // Calls are what most people look for first; the other relationships wait under one fold.
-  const rels = relationSection(REL_LABELS.calls[0], byKind(out, 'calls'), 't') + relationSection(REL_LABELS.calls[1], byKind(inc, 'calls'), 's');
+  const rels = relationSection(REL_LABELS.call[0], byKind(out, 'call'), 'target') + relationSection(REL_LABELS.call[1], byKind(inc, 'call'), 'source');
   let more = '';
   let moreCount = 0;
-  for (const k of ['inherits', 'overrides', 'includes', 'uses', 'pairs']) {
-    for (const [title, edges, end] of [[REL_LABELS[k][0], byKind(out, k), 't'], [REL_LABELS[k][1], byKind(inc, k), 's']]) {
+  for (const k of ['inherits', 'overrides', 'include', 'type-use', 'pair']) {
+    for (const [title, edges, end] of [[REL_LABELS[k][0], byKind(out, k), 'target'], [REL_LABELS[k][1], byKind(inc, k), 'source']]) {
       const sec = relationSection(title, edges, end, true);
       if (sec) moreCount++;
       more += sec;
@@ -168,11 +168,11 @@ export function renderDetails() {
     more += deps;
   }
   const moreRels = more ? `<details class="morerels"><summary>More relationships <span class="muted">${moreCount}</span></summary>${more}</details>` : '';
-  const isFn = n.kind === 'function' || n.kind === 'method';
+  const isFn = n.kind === 'function' || n.kind === 'prototype' || n.kind === 'method';
   const status = n.status ? `<span class="pill st-${n.status}">${n.status}</span>` : '';
   el.innerHTML = `
-    <div class="dhead k-${n.kind}"><span class="g big">${info.glyph}</span><div><div class="dname">${esc(n.name)} ${status}</div><div class="muted">${esc(info.label)}${n.access ? ' · ' + esc(n.access) : ''}${n.isVirtual ? ' · virtual' : ''}${n.isStatic ? ' · static' : ''}</div></div></div>
-    ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
+    <div class="dhead k-${n.kind}"><span class="g big">${info.glyph}</span><div><div class="dname">${esc(n.label)} ${status}</div><div class="muted">${esc(info.label)}${n.access ? ' · ' + esc(n.access) : ''}${n.isVirtual ? ' · virtual' : ''}${n.isStatic ? ' · static' : ''}</div></div></div>
+    ${n.qname && n.qname !== n.label ? `<div class="qname">${esc(n.qname)}</div>` : ''}
     ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
     ${summaryBlock(n)}
     <div id="dConcepts"${summaryReady(n) && summaryHasTags(n) ? ' class="hidden"' : ''}>${conceptPills(n.id)}</div>
@@ -215,10 +215,10 @@ export function renderDetails() {
         switchTab('ai');
         S.aiMode = 'path';
         persist();
-        ask(`What happens when ${n.qname || n.name} runs?`, 'path', n.id);
+        ask(`What happens when ${n.qname || n.label} runs?`, 'path', n.id);
       } else if (act === 'explain') {
         switchTab('ai');
-        ask(`Explain ${n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask');
+        ask(`Explain ${n.kind} ${n.qname || n.label}: what is it responsible for, and how does it interact with the rest of the code?`, 'ask');
       }
     };
   });
@@ -252,13 +252,13 @@ export function aggregatedDeps(id) {
   const inFiles = new Map();
   for (const u of under) {
     for (const e of S.out.get(u) || []) {
-      if (under.has(e.t) || e.kind === 'includes') continue;
-      const f = level(e.t);
+      if (under.has(e.target) || e.kind === 'include') continue;
+      const f = level(e.target);
       if (f && !under.has(f)) outFiles.set(f, (outFiles.get(f) || 0) + (e.n || 1));
     }
     for (const e of S.inc.get(u) || []) {
-      if (under.has(e.s) || e.kind === 'includes') continue;
-      const f = level(e.s);
+      if (under.has(e.source) || e.kind === 'include') continue;
+      const f = level(e.source);
       if (f && !under.has(f)) inFiles.set(f, (inFiles.get(f) || 0) + (e.n || 1));
     }
   }
@@ -274,7 +274,7 @@ export function aggregatedDeps(id) {
 }
 
 export function entryPoints() {
-  const mains = S.graph ? S.graph.nodes.filter(n => n.name === 'main' && n.kind === 'function') : [];
+  const mains = S.graph ? S.graph.nodes.filter(n => n.label === 'main' && n.kind === 'function') : [];
   const classes = S.graph
     ? S.graph.nodes
         .filter(n => n.kind === 'class' || n.kind === 'struct')
@@ -356,12 +356,12 @@ export function renderEdgeDetails(el, e) {
     .slice(0, 100)
     .map(r => {
       const site = r.sites && r.sites[0];
-      return `<li>${nodeChip(r.s)} <span class="muted">${verb}</span> ${nodeChip(r.t)}${r.uncertain ? ' <span class="muted">?</span>' : ''}${r.status ? ` <span class="pill sm st-${r.status}">${r.status}</span>` : ''}${
+      return `<li>${nodeChip(r.source)} <span class="muted">${verb}</span> ${nodeChip(r.target)}${r.uncertain ? ' <span class="muted">?</span>' : ''}${r.status ? ` <span class="pill sm st-${r.status}">${r.status}</span>` : ''}${
         site ? ` <a class="site" data-open-file="${esc(site.file)}" data-open-line="${site.line}" data-side="${r.status === 'removed' ? 'base' : 'target'}" title="${esc(site.file + ':' + site.line)}">↗</a>` : ''
       }</li>`;
     })
     .join('');
-  el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.s)} <span class="muted">${verb}</span> ${nodeChip(e.t)}</div><div class="muted">${e.raw.length} underlying relationship${e.raw.length === 1 ? '' : 's'}, ${e.count} occurrence${e.count === 1 ? '' : 's'}</div></div></div>
+  el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.source)} <span class="muted">${verb}</span> ${nodeChip(e.target)}</div><div class="muted">${e.raw.length} underlying relationship${e.raw.length === 1 ? '' : 's'}, ${e.count} occurrence${e.count === 1 ? '' : 's'}</div></div></div>
     ${e.uncertain ? '<p class="muted">Uncertain: the call target was matched by name only and may be one of several candidates.</p>' : ''}
     <ul class="rel">${raw}</ul>`;
   bindLinks(el);
@@ -378,7 +378,7 @@ export function bindLinks(el) {
   el.querySelectorAll('[data-open-file]').forEach(a => {
     a.onclick = ev => {
       ev.preventDefault();
-      vscode.postMessage({ type: 'open', file: a.dataset.openFile, line: +a.dataset.openLine, side: a.dataset.side });
+      vscode.postMessage({ type: 'openLocation', file: a.dataset.openFile, line: +a.dataset.openLine });
     };
   });
 }

@@ -6,9 +6,9 @@
 // recomputed only when the code it describes changes.
 // No `vscode` dependency: the model is reached through complete(prompt) -> text.
 
-const { hashString } = require('../parser/cppParser');
+const { hashString } = require('../util/hash');
 
-const SUMMARIZABLE = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'file', 'variable']);
+const SUMMARIZABLE = new Set(['function', 'prototype', 'method', 'class', 'struct', 'union', 'enum', 'file', 'variable']);
 const CONTAINERS = new Set(['class', 'struct', 'union', 'enum', 'file']);
 const SOURCE_LINES = 80;
 const NAMES = 12; // names listed per relationship
@@ -42,7 +42,7 @@ function contentKey(tools, n) {
 
 /** The prompt for one node: what it is, its connections and its source. */
 async function buildPrompt(tools, n) {
-  const label = x => (x.kind === 'file' ? x.file : x.qname || x.name);
+  const label = x => (x.kind === 'file' ? x.file : x.qname || x.label);
   const name = id => {
     const x = tools.nodes.get(id);
     return x ? label(x) : id;
@@ -57,27 +57,27 @@ async function buildPrompt(tools, n) {
   const of = (list, kind) => list.filter(e => e.kind === kind);
   const parent = n.parent && tools.nodes.get(n.parent);
 
-  const lines = [`Element: ${label(n)} (${n.kind}${n.kind === 'file' && n.header ? ', header' : ''})`];
-  if (parent && parent.kind !== 'dir' && parent.kind !== 'file') lines.push(`Inside: ${parent.qname || parent.name} (${parent.kind})`);
+  const lines = [`Element: ${label(n)} (${n.kind}${n.kind === 'file' && n.fileRole === 'header' ? ', header' : ''})`];
+  if (parent && parent.kind !== 'dir' && parent.kind !== 'file') lines.push(`Inside: ${parent.qname || parent.label} (${parent.kind})`);
   if (n.signature) lines.push('Signature: ' + n.signature);
   const r = tools.codeRange(n);
   lines.push('Location: ' + r.file + ':' + r.start);
   lines.push(
-    rel(of(inc, 'calls'), e => e.s, 'Called by'),
-    rel(of(out, 'calls'), e => e.t, 'Calls'),
-    rel(of(out, 'uses'), e => e.t, 'Uses types'),
-    rel(of(inc, 'uses'), e => e.s, 'Used by'),
-    rel(of(out, 'inherits'), e => e.t, 'Derives from'),
-    rel(of(inc, 'inherits'), e => e.s, 'Derived classes'),
-    rel(of(out, 'overrides'), e => e.t, 'Overrides'),
-    rel(of(inc, 'overrides'), e => e.s, 'Overridden by'),
-    rel(of(out, 'includes'), e => e.t, 'Includes'),
-    rel(of(inc, 'includes'), e => e.s, 'Included by'),
-    rel(of(out, 'pairs'), e => e.t, 'Implemented in'),
-    rel(of(inc, 'pairs'), e => e.s, 'Implements declarations from')
+    rel(of(inc, 'call'), e => e.source, 'Called by'),
+    rel(of(out, 'call'), e => e.target, 'Calls'),
+    rel(of(out, 'type-use'), e => e.target, 'Uses types'),
+    rel(of(inc, 'type-use'), e => e.source, 'Used by'),
+    rel(of(out, 'inherits'), e => e.target, 'Derives from'),
+    rel(of(inc, 'inherits'), e => e.source, 'Derived classes'),
+    rel(of(out, 'overrides'), e => e.target, 'Overrides'),
+    rel(of(inc, 'overrides'), e => e.source, 'Overridden by'),
+    rel(of(out, 'include'), e => e.target, 'Includes'),
+    rel(of(inc, 'include'), e => e.source, 'Included by'),
+    rel(of(out, 'pair'), e => e.target, 'Implemented in'),
+    rel(of(inc, 'pair'), e => e.source, 'Implements declarations from')
   );
   const kids = (tools.children.get(n.id) || []).map(id => tools.nodes.get(id)).filter(Boolean);
-  if (kids.length) lines.push(`Contains: ${kids.slice(0, 30).map(k => `${k.qname || k.name} (${k.kind})`).join(', ')}${kids.length > 30 ? ` and ${kids.length - 30} more` : ''}`);
+  if (kids.length) lines.push(`Contains: ${kids.slice(0, 30).map(k => `${k.qname || k.label} (${k.kind})`).join(', ')}${kids.length > 30 ? ` and ${kids.length - 30} more` : ''}`);
   if (n.values && n.values.length) lines.push('Values: ' + n.values.slice(0, 20).join(', '));
 
   const text = await tools.source(r.file);

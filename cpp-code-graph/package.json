@@ -22,17 +22,22 @@
     "visualization",
     "architecture"
   ],
-  "main": "./src/extension.js",
+  "main": "./out/extension.js",
   "scripts": {
-    "build": "node scripts/build-webview.js",
-    "watch": "node scripts/build-webview.js --watch",
-    "test": "node test/smoke.js && node test/ui.test.js",
+    "build": "node scripts/build-extension.js && node scripts/build-webview.js",
+    "watch": "node scripts/watch.js",
+    "typecheck": "tsc -p .",
+    "test": "node test/run.js",
     "package": "node scripts/package.js"
   },
   "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/vscode": "1.90.0",
     "cytoscape": "3.34.4",
     "cytoscape-elk": "2.3.0",
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "web-tree-sitter": "0.27.1"
   },
   "activationEvents": [
     "onLanguage:c",
@@ -64,6 +69,11 @@
       {
         "command": "codeGraph.ask",
         "title": "Ask a Question About the Code",
+        "category": "Code Graph"
+      },
+      {
+        "command": "codeGraph.dumpSymbols",
+        "title": "Dump Parsed Symbols",
         "category": "Code Graph"
       }
     ],

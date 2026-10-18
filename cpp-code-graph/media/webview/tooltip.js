@@ -11,14 +11,14 @@ export function tooltipHtml(id, edgeKey) {
   if (id) {
     const n = S.nodes.get(id);
     const info = KIND_INFO[n.kind] || { label: n.kind };
-    html = `<b>${esc(n.name)}</b> <span class="muted">${esc(info.label)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${n.qname && n.qname !== n.name && !n.signature ? `<div class="mono">${esc(n.qname)}</div>` : ''}${
+    html = `<b>${esc(n.label)}</b> <span class="muted">${esc(info.label)}</span>${n.signature ? `<div class="mono">${esc(n.signature)}</div>` : ''}${n.qname && n.qname !== n.label && !n.signature ? `<div class="mono">${esc(n.qname)}</div>` : ''}${
       n.file && n.kind !== 'dir' ? `<div class="muted">${esc(n.defFile || n.file)}:${n.defLine || n.line || 1}</div>` : ''
     }${n.status ? `<div class="pill sm st-${n.status}">${n.status}</div>` : ''}`;
   } else if (edgeKey && S.vis) {
     const e = findEdge(edgeKey);
     if (e) {
       const verb = edgeVerb(e);
-      html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.t).name)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
+      html = `<b>${esc(S.nodes.get(e.source).label)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.target).label)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
     }
   }
   return html;

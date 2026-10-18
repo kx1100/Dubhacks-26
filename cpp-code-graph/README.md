@@ -70,24 +70,27 @@ There is no preprocessing or template instantiation, so calls through macros, fu
 
 ## Development
 
-Plain JavaScript. The extension host runs from `src/` as is; the webview is bundled with esbuild (`npm run build`, or `npm run watch`) from `media/webview/main.js` into `media/dist/graph.js`.
+The extension host is TypeScript (with the AI modules in JavaScript), bundled with esbuild from `src/extension.ts` into `out/extension.js`; the tree-sitter grammars in `parsers/` are copied to `out/parsers/`. The webview is bundled from `media/webview/main.js` into `media/dist/graph.js`. `npm run build` builds both (`npm run watch` rebuilds on change), and `npm run typecheck` runs `tsc`.
 
-- `src/parser/`: lexer and parser
-- `src/graph/`: name resolution and graph building
+- `src/types.ts`: the graph and message types shared by the extension and the webview
+- `src/parser/`: tree-sitter parsing (C and C++ grammars) and extraction
+- `src/graph/builder.ts`: name resolution and graph building
 - `src/ai/`: Language Model API integration (summaries, Ask AI agent, impact, AI layer)
-- `src/extension.js`: commands, webview and file watching
+- `src/workspaceIndex.ts`: finds, reads and parses the workspace's files
+- `src/panel.ts`: the webview panel and its messages; `src/extension.ts`: commands and file watching
 - `media/webview/`: the webview: `main.js` (messages, actions, bindings), `model.js` (tree, expansion, visible graph), `state.js`, `code.js` (code cards), `tooltip.js`, `shell.js` (page HTML) and `panels/` (toolbar, details, summary, impact, Ask AI)
 - `media/webview/renderer.js`: the renderer interface; `renderer-svg.js` implements it. `media/layout.js` is the upcoming Cytoscape + ELK layout
 
 | Task | Command |
 | --- | --- |
-| Build webview | `npm run build` (`npm run watch` to rebuild on change) |
-| Run | Open this folder in VS Code and press **F5** (builds the webview, uses `sample/`) |
-| Dump parser output | `node test/dump.js <folder>` |
-| Extension smoke test | `node test/smoke.js` |
-| Unit tests | `node test/<name>.test.js` (`highlight`, `graphTools`, `agent`, `summaries`, `impact`, `impactCheck`, `semantic`) |
-| UI harness | `node test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178` |
-| Browser test | `node test/ui.test.js` (set `CHROME` if Chrome/Edge isn't found) |
+| Build | `npm run build` (`npm run watch` to rebuild on change) |
+| Run | Open this folder in VS Code and press **F5** (builds, uses `sample/`) |
+| All tests | `npm test` (every test below, plus the smoke test against the built bundle) |
+| Dump parser output | `node test/run.js test/dump.js <folder>` (or the **Dump Parsed Symbols** command) |
+| Extension smoke test | `node test/run.js test/smoke.js` |
+| Unit tests | `node test/run.js test/<name>.test.js` (`highlight`, `graphTools`, `agent`, `summaries`, `impact`, `semantic`) |
+| UI harness | `node test/run.js test/make-fixtures.js`, then `node test/serve.js` and open `http://localhost:5178` |
+| Browser test | `node test/run.js test/ui.test.js` (set `CHROME` if Chrome/Edge isn't found) |
 | Large test project | `node test/gen-large.js <dir> [modules]` |
 | Package | `node scripts/package.js` |
 

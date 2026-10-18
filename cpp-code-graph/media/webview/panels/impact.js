@@ -42,7 +42,7 @@ export function applyImpactHighlight() {
   if (!imp || !imp.result || imp.result.error) return;
   const ids = new Set([imp.target, ...imp.result.items.map(i => i.id)].filter(id => S.nodes.has(id)));
   const n = S.nodes.get(imp.target);
-  S.highlight = { ids, path: [], label: `Impact: ${CHANGE_LABELS[imp.changeType].toLowerCase()} of ${n ? n.qname || n.name : imp.target}`, source: 'impact', impact: imp };
+  S.highlight = { ids, path: [], label: `Impact: ${CHANGE_LABELS[imp.changeType].toLowerCase()} of ${n ? n.qname || n.label : imp.target}`, source: 'impact', impact: imp };
   renderer.refreshStyle();
 }
 
@@ -80,7 +80,7 @@ export function renderImpact() {
     const s = r.summary;
     const name = id => {
       const x = S.nodes.get(id);
-      return x ? x.qname || x.name : id;
+      return x ? x.qname || x.label : id;
     };
     const groups = new Map();
     for (const it of items) {

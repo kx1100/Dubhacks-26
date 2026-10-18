@@ -47,7 +47,7 @@ const RELATION_LABELS = {
   implementation: 'Implements the header'
 };
 
-const ELIGIBLE = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'file']);
+const ELIGIBLE = new Set(['function', 'prototype', 'method', 'class', 'struct', 'union', 'enum', 'file']);
 const CLASSLIKE = new Set(['class', 'struct', 'union', 'enum']);
 const MAX_DEPTH = 4;
 const MAX_ITEMS = 300;
@@ -109,48 +109,48 @@ function predictImpact(tools, targetId, changeType) {
       const next = [];
       for (const id of frontier) {
         for (const e of inc(id)) {
-          if (e.kind !== 'calls' || seen.has(e.s)) continue;
-          seen.add(e.s);
-          add(e.s, depth === 1 ? directRelation : 'indirect', depth === 1 ? 1 : depth, id, e);
-          next.push(e.s);
+          if (e.kind !== 'call' || seen.has(e.source)) continue;
+          seen.add(e.source);
+          add(e.source, depth === 1 ? directRelation : 'indirect', depth === 1 ? 1 : depth, id, e);
+          next.push(e.source);
         }
       }
       frontier = next;
     }
   };
 
-  const fn = target.kind === 'function' || target.kind === 'method';
+  const fn = target.kind === 'function' || target.kind === 'prototype' || target.kind === 'method';
   if (fn) {
     callersOf(targetId, 'caller');
-    for (const e of inc(targetId)) if (e.kind === 'overrides') add(e.s, 'override', 1, targetId, e);
-    for (const e of out(targetId)) if (e.kind === 'overrides') add(e.t, 'base', 1, targetId, e);
+    for (const e of inc(targetId)) if (e.kind === 'overrides') add(e.source, 'override', 1, targetId, e);
+    for (const e of out(targetId)) if (e.kind === 'overrides') add(e.target, 'base', 1, targetId, e);
     // The header that declares it, and the files including that header, see the declaration.
     const declFile = target.declFile || (target.defFile && target.defFile !== target.file ? target.file : null);
     if (declFile && changeType !== 'behavior') {
-      for (const e of inc('file:' + declFile)) if (e.kind === 'includes') add(e.s, 'includer', 1, 'file:' + declFile, e);
+      for (const e of inc('file:' + declFile)) if (e.kind === 'include') add(e.source, 'includer', 1, 'file:' + declFile, e);
     }
   } else if (CLASSLIKE.has(target.kind)) {
-    for (const e of inc(targetId)) if (e.kind === 'uses') add(e.s, 'typeUser', 1, targetId, e);
+    for (const e of inc(targetId)) if (e.kind === 'type-use') add(e.source, 'typeUser', 1, targetId, e);
     // Derived classes, transitively.
     let frontier = [targetId];
     for (let depth = 1; depth <= MAX_DEPTH && frontier.length; depth++) {
       const next = [];
       for (const id of frontier) {
         for (const e of inc(id)) {
-          if (e.kind !== 'inherits' || found.has(e.s)) continue;
-          add(e.s, 'derived', depth, id, e);
-          next.push(e.s);
+          if (e.kind !== 'inherits' || found.has(e.source)) continue;
+          add(e.source, 'derived', depth, id, e);
+          next.push(e.source);
         }
       }
       frontier = next;
     }
     // Callers of its members (constructors included).
     for (const mid of tools.children.get(targetId) || []) {
-      for (const e of inc(mid)) if (e.kind === 'calls' && !(tools.children.get(targetId) || []).includes(e.s)) add(e.s, 'memberCaller', 1, mid, e);
+      for (const e of inc(mid)) if (e.kind === 'call' && !(tools.children.get(targetId) || []).includes(e.source)) add(e.source, 'memberCaller', 1, mid, e);
     }
     const headerFile = target.file;
-    if (changeType !== 'behavior' && headerFile && nodeOfFile(headerFile) && nodeOfFile(headerFile).header) {
-      for (const e of inc('file:' + headerFile)) if (e.kind === 'includes') add(e.s, 'includer', 1, 'file:' + headerFile, e);
+    if (changeType !== 'behavior' && headerFile && nodeOfFile(headerFile) && nodeOfFile(headerFile).fileRole === 'header') {
+      for (const e of inc('file:' + headerFile)) if (e.kind === 'include') add(e.source, 'includer', 1, 'file:' + headerFile, e);
     }
   } else if (target.kind === 'file') {
     // Includers, transitively (each level halves the weight).
@@ -160,17 +160,17 @@ function predictImpact(tools, targetId, changeType) {
       const next = [];
       for (const id of frontier) {
         for (const e of inc(id)) {
-          if (e.kind !== 'includes' || seen.has(e.s)) continue;
-          seen.add(e.s);
-          add(e.s, 'fileIncluder', depth, id, e);
+          if (e.kind !== 'include' || seen.has(e.source)) continue;
+          seen.add(e.source);
+          add(e.source, 'fileIncluder', depth, id, e);
           // Only direct includers name the file; deeper ones just see its declarations.
-          if (depth > 1) found.get(e.s).weight *= Math.pow(0.5, depth - 1);
-          next.push(e.s);
+          if (depth > 1) found.get(e.source).weight *= Math.pow(0.5, depth - 1);
+          next.push(e.source);
         }
       }
       frontier = next;
     }
-    for (const e of out(targetId)) if (e.kind === 'pairs') add(e.t, 'implementation', 1, targetId, e);
+    for (const e of out(targetId)) if (e.kind === 'pair') add(e.target, 'implementation', 1, targetId, e);
   }
 
   // Tests: does any test file reach the target or an affected node through calls?
@@ -181,7 +181,7 @@ function predictImpact(tools, targetId, changeType) {
       const next = [];
       for (const x of frontier) {
         if (isTestFile(fileOf(x))) return true;
-        for (const e of inc(x)) if (e.kind === 'calls' && !seen.has(e.s)) (seen.add(e.s), next.push(e.s));
+        for (const e of inc(x)) if (e.kind === 'call' && !seen.has(e.source)) (seen.add(e.source), next.push(e.source));
       }
       frontier = next;
     }
@@ -194,7 +194,7 @@ function predictImpact(tools, targetId, changeType) {
   for (const f of found.values()) {
     const n = tools.nodes.get(f.id);
     const file = fileOf(f.id);
-    const callers = new Set(inc(f.id).filter(e => e.kind === 'calls').map(e => e.s)).size;
+    const callers = new Set(inc(f.id).filter(e => e.kind === 'call').map(e => e.source)).size;
     const crossDir = dirOf(file) !== targetDir;
     const test = isTestFile(file);
     let mult = 1;
@@ -220,7 +220,7 @@ function predictImpact(tools, targetId, changeType) {
   const dirs = new Set([...files].map(dirOf));
   const count = t => items.filter(i => i.tier === t).length;
   const notes = [];
-  const header = target.declFile || (target.kind === 'file' && target.header ? target.file : CLASSLIKE.has(target.kind) && nodeOfFile(target.file) && nodeOfFile(target.file).header ? target.file : null);
+  const header = target.declFile || (target.kind === 'file' && target.fileRole === 'header' ? target.file : CLASSLIKE.has(target.kind) && nodeOfFile(target.file) && nodeOfFile(target.file).fileRole === 'header' ? target.file : null);
   if (target.isStatic && target.kind === 'function') notes.push('It is file-local (static), so only code in its own file can call it.');
   else if (header) notes.push(`It is declared in the header ${header}, so other files can depend on it.`);
   if (target.isVirtual || items.some(i => i.relation === 'override')) notes.push('It is virtual: overrides must keep the same signature.');
@@ -238,65 +238,4 @@ function predictImpact(tools, targetId, changeType) {
   };
 }
 
-const RELATED_DEPTH = 2; // a missed change this close to the target (any relationship) counts against recall
-
-/**
- * Compares the prediction made on the code before an edit with what the edit
- * actually changed.
- *   hits         predicted places that changed
- *   falseAlarms  places predicted as high or medium risk that did not change
- *   missed       changed places that were not predicted; `related` ones are
- *                within RELATED_DEPTH relationships of the target, the rest are
- *                probably unrelated edits
- * Symbols are compared for functions and classes, files for a file.
- * @param {import('./graphTools').GraphTools} beforeTools  the graph before the edit
- * @param {{nodes:object[]}} diff  diffGraphs(before, after)
- */
-function checkPrediction(beforeTools, diff, targetId, changeType) {
-  const prediction = predictImpact(beforeTools, targetId, changeType);
-  if (prediction.error) return prediction;
-  const fileLevel = beforeTools.nodes.get(targetId).kind === 'file';
-  const comparable = n => !!n && (fileLevel ? n.kind === 'file' : !['file', 'dir', 'namespace', 'field', 'variable'].includes(n.kind));
-  const status = new Map(diff.nodes.filter(n => n.status).map(n => [n.id, n.status]));
-  // Added code is new, not an affected place.
-  const changed = new Set(diff.nodes.filter(n => n.status && n.status !== 'added' && n.id !== targetId && comparable(n)).map(n => n.id));
-
-  const predicted = prediction.items.filter(i => comparable(beforeTools.nodes.get(i.id)));
-  const flagged = predicted.filter(i => i.tier !== 'low');
-  const pick = i => ({ id: i.id, relation: i.relation, score: i.score, tier: i.tier, status: status.get(i.id) || null });
-  const hits = predicted.filter(i => changed.has(i.id)).map(pick);
-  const falseAlarms = flagged.filter(i => !changed.has(i.id)).map(pick);
-
-  // Distance from the target over any relationship, in the before graph.
-  const near = new Set([targetId]);
-  let frontier = [targetId];
-  for (let d = 0; d < RELATED_DEPTH && frontier.length; d++) {
-    const next = [];
-    for (const id of frontier) {
-      for (const e of [...(beforeTools.out.get(id) || []), ...(beforeTools.inc.get(id) || [])]) {
-        const other = e.s === id ? e.t : e.s;
-        if (!near.has(other)) (near.add(other), next.push(other));
-      }
-    }
-    frontier = next;
-  }
-  const predictedIds = new Set(predicted.map(i => i.id));
-  const missed = [...changed].filter(id => !predictedIds.has(id)).map(id => ({ id, status: status.get(id), related: near.has(id) }));
-  const missedRelated = missed.filter(m => m.related).length;
-  const flaggedHits = flagged.filter(i => changed.has(i.id)).length;
-
-  return {
-    target: targetId,
-    changeType: prediction.changeType,
-    targetChanged: status.get(targetId) || null,
-    compared: fileLevel ? 'files' : 'symbols',
-    hits,
-    falseAlarms,
-    missed,
-    precision: flagged.length ? flaggedHits / flagged.length : null,
-    recall: hits.length + missedRelated ? hits.length / (hits.length + missedRelated) : null,
-    changedCount: changed.size
-  };
-}
-
-module.exports = { predictImpact, checkPrediction, canPredict, isTestFile, CHANGE_TYPES, RELATION_LABELS, WEIGHTS };
+module.exports = { predictImpact, canPredict, isTestFile, CHANGE_TYPES, RELATION_LABELS, WEIGHTS };

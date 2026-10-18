@@ -83,7 +83,7 @@ export function renderLegend() {
   const edges = EDGE_KINDS.filter(k => S.edgeOn[k.kind])
     .map(k => `<div class="lrow"><svg width="30" height="10"><line x1="1" y1="5" x2="22" y2="5" class="legend-line ek-${k.kind}"/><path d="M22,1 L29,5 L22,9 z" class="arrowhead ek-${k.kind}${k.kind === 'inherits' ? ' hollow' : ''}"/></svg>${esc(k.label)}</div>`)
     .join('');
-  const kindsShown = ['file', 'class', 'struct', 'function', 'method', 'enum', 'namespace', 'field'];
+  const kindsShown = ['file', 'class', 'struct', 'function', 'prototype', 'method', 'enum', 'namespace', 'field'];
   const nodes = kindsShown.map(k => `<span class="lnode k-${k}"><span class="g">${KIND_INFO[k].glyph}</span>${KIND_INFO[k].label}</span>`).join('');
   el.innerHTML = `<div class="lhead" id="legendToggle">Legend ${el.classList.contains('collapsed') ? '▸' : '▾'}</div><div class="lbody">${edges}<div class="lnodes">${nodes}</div><div class="hint">Dashed = uncertain call · double-click to expand · &lt;/&gt; shows code · Ctrl+click opens source</div></div>`;
   $('legendToggle').onclick = () => {
@@ -132,7 +132,7 @@ export function runSearch(q) {
   } else {
     const scored = [];
     for (const n of S.graph.nodes) {
-      const name = (n.name || '').toLowerCase();
+      const name = (n.label || '').toLowerCase();
       const qn = (n.qname || n.file || '').toLowerCase();
       let s = 0;
       if (name === ql) s = 4;
@@ -141,7 +141,7 @@ export function runSearch(q) {
       else if (qn.includes(ql)) s = 1;
       if (s) scored.push([n, s]);
     }
-    scored.sort((a, b) => b[1] - a[1] || ((KIND_INFO[a[0].kind] || {}).rank || 9) - ((KIND_INFO[b[0].kind] || {}).rank || 9) || a[0].name.localeCompare(b[0].name));
+    scored.sort((a, b) => b[1] - a[1] || ((KIND_INFO[a[0].kind] || {}).rank || 9) - ((KIND_INFO[b[0].kind] || {}).rank || 9) || a[0].label.localeCompare(b[0].label));
     S.search.matches = scored.map(([n]) => n.id);
     S.search.index = -1;
   }
@@ -162,7 +162,7 @@ export function renderSearchList() {
     .map((id, i) => {
       const n = S.nodes.get(id);
       const info = KIND_INFO[n.kind] || { glyph: '?' };
-      return `<div class="sitem${i === S.search.index ? ' active' : ''}" data-i="${i}"><span class="chip k-${n.kind}"><span class="g">${info.glyph}</span>${esc(n.name)}</span><span class="muted">${esc(n.qname && n.qname !== n.name ? n.qname : '')} ${esc(n.file || '')}${n.line ? ':' + n.line : ''}</span></div>`;
+      return `<div class="sitem${i === S.search.index ? ' active' : ''}" data-i="${i}"><span class="chip k-${n.kind}"><span class="g">${info.glyph}</span>${esc(n.label)}</span><span class="muted">${esc(n.qname && n.qname !== n.label ? n.qname : '')} ${esc(n.file || '')}${n.line ? ':' + n.line : ''}</span></div>`;
     })
     .join('');
   el.querySelectorAll('.sitem').forEach(it => {
