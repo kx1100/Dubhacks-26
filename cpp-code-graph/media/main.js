@@ -11,7 +11,9 @@
 // - Arrows: "Selected" (only the selected node's), "Bundled" (the default: one
 //   arrow per pair of files with a count, plus exact arrows inside a file and
 //   for the selection) or "All".
-// - Ask AI: a side panel; the answer's nodes are highlighted and its path drawn bold.
+// - Side panel with two tabs: Details (the selected node: what it is, its AI
+//   summary, where it is, what it connects to) and Ask AI (the answer's nodes
+//   are highlighted and its path drawn bold).
 // - Compare: the graph of two commits, colored by what was added, removed or changed.
 
 import cytoscape from 'cytoscape';
@@ -75,6 +77,28 @@ const KIND_LABEL = {
     namespace: 'Namespace',
 };
 
+/** Details tab: [outgoing, incoming] titles per relationship, in the order shown. Calls come first. */
+const REL_TITLES = {
+    calls: ['Calls', 'Called by'],
+    uses: ['Uses types', 'Used by'],
+    includes: ['Includes', 'Included by'],
+    pairs: ['Implemented in', 'Declared in'],
+    inherits: ['Inherits from', 'Derived classes'],
+    overrides: ['Overrides', 'Overridden by'],
+    semantic: ['AI: related to', 'AI: related from'],
+};
+
+const TABS = { details: 'Details', ai: 'Ask AI' };
+
+/** Starter questions on the Ask AI tab: [label, question, mode]. */
+const SUGGESTIONS = [
+    ['Project overview', 'What does this project do, and how is it organized?', 'ask'],
+    ['Where it starts', 'Where does the program start, and what happens next?', 'path'],
+    ['How classes relate', 'How do the main classes relate to each other?', 'ask'],
+];
+
+const CONFIDENCE_TITLE = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
+
 // Code card geometry, in graph (model) pixels.
 const CARD = { header: 26, line: 16, maxLines: 18, char: 7.2, gutter: 52, minW: 240, maxW: 620, pad: 14 };
 
@@ -92,6 +116,17 @@ const state = {
     childCount: new Map(),
     /** @type {Map<string, number>} box id -> number of symbols inside it, all the way down */
     descCount: new Map(),
+    /** @type {Map<string, GraphNode[]>} box id -> what sits directly in it */
+    children: new Map(),
+    /** @type {Map<string, GraphEdge[]>} node id -> edges leaving it */
+    out: new Map(),
+    /** @type {Map<string, GraphEdge[]>} node id -> edges arriving at it */
+    inc: new Map(),
+    side: {
+        open: saved.sideOpen ?? saved.aiOpen ?? true,
+        /** @type {keyof typeof TABS} */
+        tab: saved.tab in TABS ? saved.tab : 'details',
+    },
     /** @type {Set<string>} expanded file ids */
     expanded: new Set(saved.expanded || []),
     /** @type {string | null} */
@@ -116,7 +151,6 @@ const state = {
     sourceReqs: new Map(),
     nextReq: 1,
     ai: {
-        open: !!saved.aiOpen,
         busy: false,
         question: '',
         answer: '',
@@ -125,9 +159,15 @@ const state = {
         error: false,
         model: /** @type {string | null | undefined} */ (undefined),
         /** @type {any[]} */
+        evidence: [],
+        confidence: /** @type {string | undefined} */ (undefined),
+        confidenceReason: /** @type {string | undefined} */ (undefined),
+        /** @type {any[]} */
         history: [],
+        /** A selected node the user chose not to send with the question. */
+        contextOff: /** @type {string | null} */ (null),
     },
-    /** @type {Map<string, {status: 'loading' | 'ready' | 'none', text?: string, model?: string}>} AI summaries */
+    /** @type {Map<string, {status: 'loading' | 'ready' | 'none', text?: string, tags?: string[], notes?: string[], model?: string, note?: string}>} AI summaries */
     summaries: new Map(),
     firstGraph: true,
     layoutRun: 0,
@@ -139,7 +179,8 @@ const persist = () =>
         selected: state.selected,
         edgeMode: state.edgeMode,
         openCode: [...state.openCode],
-        aiOpen: state.ai.open,
+        sideOpen: state.side.open,
+        tab: state.side.tab,
     });
 
 // ---------------------------------------------------------------------------
@@ -160,7 +201,7 @@ app.innerHTML = `
   <span id="compareInfo" class="compare-info hidden"></span>
   <button id="compare" title="Compare the graph of two git commits">Compare</button>
   <button id="exitCompare" class="hidden" title="Back to the current workspace">Exit compare</button>
-  <button id="askToggle" title="Ask a question about the code">Ask AI</button>
+  <button id="sideToggle" title="Show or hide the Details and Ask AI panel">Panel</button>
   <button id="refresh" title="Rescan the workspace">Refresh</button>
 </header>
 <div class="workspace">
@@ -172,20 +213,29 @@ app.innerHTML = `
   <div id="legend" class="legend"></div>
   <div id="tooltip" class="tooltip hidden"></div>
 </main>
-<aside id="ai" class="ai hidden" aria-label="Ask AI">
-  <div class="ai-head"><b>Ask AI</b><button id="aiClose" class="card-btn" title="Close">✕</button></div>
-  <form id="askForm" class="ask-form">
-    <textarea id="question" rows="3" placeholder="e.g. What happens when a list is freed?"></textarea>
-    <div class="ask-row">
-      <label title="Trace the main execution path through the code"><input type="checkbox" id="pathMode"> Trace path</label>
-      <span class="spacer"></span>
-      <button type="button" id="cancelAsk" class="hidden">Stop</button>
-      <button type="submit" id="askBtn">Ask</button>
-    </div>
-  </form>
-  <div id="selInfo" class="sel-info hidden"></div>
-  <div id="answer" class="answer"></div>
-  <div class="history"><select id="history" title="Earlier answers"></select><button id="historyClear" class="card-btn" title="Clear the history">Clear</button></div>
+<aside id="side" class="side hidden" aria-label="Side panel">
+  <div class="tabs" role="tablist">
+    <button data-tab="details" role="tab">Details</button>
+    <button data-tab="ai" role="tab">Ask AI</button>
+    <span class="spacer"></span>
+    <button id="sideClose" class="card-btn" title="Close the panel">✕</button>
+  </div>
+  <div id="tab-details" class="tabbody details" role="tabpanel"></div>
+  <div id="tab-ai" class="tabbody ask hidden" role="tabpanel">
+    <form id="askForm" class="ask-form">
+      <textarea id="question" rows="3" placeholder="e.g. What happens when a list is freed?  (Enter to ask)"></textarea>
+      <div class="ask-row">
+        <label title="Trace the main execution path through the code"><input type="checkbox" id="pathMode"> Trace path</label>
+        <span id="ctx"></span>
+        <span class="spacer"></span>
+        <button type="button" id="cancelAsk" class="hidden">Stop</button>
+        <button type="submit" id="askBtn">Ask</button>
+      </div>
+    </form>
+    <div id="suggestions" class="suggestions"></div>
+    <div id="answer" class="answer"></div>
+    <div class="history"><select id="history" title="Earlier answers"></select><button id="historyClear" class="card-btn" title="Clear the history">Clear</button></div>
+  </div>
 </aside>
 </div>`;
 
@@ -878,6 +928,7 @@ function toggleCode(/** @type {string} */ id, /** @type {boolean | undefined} */
 function showCode(/** @type {string} */ id) {
     animated(() => sizeForCode(id));
     if (state.openCode.has(id)) setTimeout(() => bringIntoView(id), MOVE_MS);
+    if (id === state.selected) renderSelection();
 }
 
 /** @param {Extract<ToWebviewMessage, {type: 'source'}>} m */
@@ -962,6 +1013,7 @@ function toggle(/** @type {string} */ boxId) {
     persist();
     animated(() => (open ? openFile(boxId) : closeFile(boxId)));
     refreshEdges();
+    renderSelection();
 }
 
 /** The boxes around a node, outermost (its file) first. */
@@ -986,6 +1038,7 @@ function focusNode(/** @type {string} */ id) {
     const n = state.byId.get(id);
     if (!n) return;
     state.selected = id;
+    renderSelection();
     const boxes = boxesAround(id);
     if (cy.$id(fileOf(id)).empty()) {
         // Nothing drawn yet: open the boxes with the next full layout.
@@ -1186,6 +1239,7 @@ $('fit').onclick = fitView;
 $('expandAll').onclick = () => {
     state.expanded = new Set([...state.childCount.keys()]);
     persist();
+    renderSelection();
     render({ fit: true });
 };
 $('collapseAll').onclick = () => {
@@ -1194,13 +1248,17 @@ $('collapseAll').onclick = () => {
     const sel = state.selected && state.byId.get(state.selected);
     if (sel && sel.kind !== 'file') state.selected = fileOf(sel.id);
     persist();
+    renderSelection();
     render({ fit: true });
 };
 $('refresh').onclick = () => send({ type: 'refresh' });
 $('compare').onclick = () => send({ type: 'compare' });
 $('exitCompare').onclick = () => send({ type: 'exitCompare' });
-$('askToggle').onclick = () => setAiOpen(!state.ai.open);
-$('aiClose').onclick = () => setAiOpen(false);
+$('sideToggle').onclick = () => setSide(!state.side.open);
+$('sideClose').onclick = () => setSide(false);
+for (const b of /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) {
+    b.onclick = () => setSide(true, /** @type {keyof typeof TABS} */ (b.dataset.tab));
+}
 document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && state.openCode.size) {
         const ids = [...state.openCode];
@@ -1211,21 +1269,82 @@ document.addEventListener('keydown', (ev) => {
 });
 
 // ---------------------------------------------------------------------------
-// Ask AI panel
+// Side panel: Details and Ask AI tabs
 // ---------------------------------------------------------------------------
 
-function setAiOpen(/** @type {boolean} */ open) {
-    state.ai.open = open;
-    $('ai').classList.toggle('hidden', !open);
-    $('askToggle').classList.toggle('on', open);
+/** Show or hide the side panel, optionally on a given tab. */
+function setSide(/** @type {boolean} */ open, /** @type {keyof typeof TABS | undefined} */ tab) {
+    const wasOpen = state.side.open;
+    state.side.open = open;
+    if (tab) state.side.tab = tab;
+    $('side').classList.toggle('hidden', !open);
+    $('sideToggle').classList.toggle('on', open);
+    for (const b of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) {
+        const on = b.dataset.tab === state.side.tab;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', String(on));
+    }
+    for (const t of Object.keys(TABS)) $(`tab-${t}`).classList.toggle('hidden', t !== state.side.tab);
     persist();
-    cy.resize();
-    placeCards();
+    if (wasOpen !== open) {
+        cy.resize();
+        placeCards();
+    }
     if (open) {
         renderSelection();
-        /** @type {HTMLTextAreaElement} */ ($('question')).focus();
+        if (state.side.tab === 'ai') /** @type {HTMLTextAreaElement} */ ($('question')).focus();
     }
 }
+
+/** Send a question (from the form, a suggestion or a Details button) and show the Ask AI tab. */
+function ask(/** @type {string} */ question, /** @type {'ask' | 'path'} */ mode, /** @type {string | undefined} */ focus) {
+    question = question.trim();
+    if (!question) return;
+    /** @type {HTMLTextAreaElement} */ ($('question')).value = question;
+    /** @type {HTMLInputElement} */ ($('pathMode')).checked = mode === 'path';
+    if (!state.side.open || state.side.tab !== 'ai') setSide(true, 'ai');
+    send({ type: 'ask', question, focus, mode });
+}
+
+/** The selected node, when it goes with the next question as context. */
+function contextNode() {
+    const n = state.selected ? state.byId.get(state.selected) : undefined;
+    return n && state.ai.contextOff !== n.id ? n : undefined;
+}
+
+/** The chip under the question box that sends the selected node along (click to leave it out). */
+function renderContext() {
+    const el = $('ctx');
+    const n = state.selected ? state.byId.get(state.selected) : undefined;
+    if (!n) {
+        el.innerHTML = '';
+        return;
+    }
+    const on = state.ai.contextOff !== n.id;
+    const title = on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question`;
+    el.innerHTML = `<button type="button" class="ctx${on ? ' on' : ''}" title="${esc(title)}"><span class="dot k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span>${esc(shortName(n))}${on ? ' ✕' : ''}</button>`;
+    /** @type {HTMLElement} */ (el.firstElementChild).onclick = () => {
+        state.ai.contextOff = on ? n.id : null;
+        renderContext();
+    };
+}
+
+/** Starter questions, shown while nothing has been asked. */
+function renderSuggestions() {
+    const el = $('suggestions');
+    const list = SUGGESTIONS.slice();
+    const n = state.selected ? state.byId.get(state.selected) : undefined;
+    if (n) list.push([`Explain ${shortName(n)}`, explainQuestion(n), 'ask']);
+    el.innerHTML = `<span class="muted">Try</span>${list.map(([label, q], i) => `<a class="sugg" data-sugg="${i}" title="${esc(q)}">${esc(label)}</a>`).join('')}`;
+    for (const a of /** @type {NodeListOf<HTMLElement>} */ (el.querySelectorAll('[data-sugg]'))) {
+        const [, q, mode] = list[Number(a.dataset.sugg)];
+        a.onclick = () => ask(q, /** @type {'ask' | 'path'} */ (mode), contextNode()?.id);
+    }
+    el.classList.toggle('hidden', !!state.ai.question);
+}
+
+const explainQuestion = (/** @type {GraphNode} */ n) =>
+    `Explain ${KIND_LABEL[n.kind]?.toLowerCase() || n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`;
 
 /** A name to show for a node: `Class::method` for methods, the plain name otherwise. */
 function shortName(/** @type {GraphNode} */ n) {
@@ -1268,16 +1387,30 @@ function renderAnswer() {
     el.classList.toggle('error', ai.error);
     $('askBtn').classList.toggle('hidden', ai.busy);
     $('cancelAsk').classList.toggle('hidden', !ai.busy);
+    renderSuggestions();
     if (!ai.question) {
         el.innerHTML = '<div class="muted">Ask how the code works, e.g. "Where is the list freed?". The nodes in the answer light up in the graph; click a name to go to it.</div>';
         return;
     }
-    const steps = ai.steps.length
-        ? `<ul class="steps">${ai.steps.map((s) => `<li>${esc(s.summary || s.tool)}</li>`).join('')}</ul>`
-        : '';
+    const stepList = `<ul class="steps">${ai.steps.map((s) => `<li>${esc(s.summary || s.tool)}</li>`).join('')}</ul>`;
+    // While it works the steps show as they come; afterwards they fold away.
+    const steps = !ai.steps.length ? '' : ai.busy ? stepList : `<details class="fold"><summary>${ai.steps.length} investigation step${ai.steps.length === 1 ? '' : 's'}</summary>${stepList}</details>`;
     const busy = ai.busy && !ai.answer ? `<div class="muted">${ai.steps.length ? 'Investigating…' : 'Thinking…'}</div>` : '';
+    const evidence = (ai.evidence || []).filter((e) => e.file || e.nodeId);
+    const sources = !ai.busy && evidence.length
+        ? `<details class="fold"><summary>${evidence.length} source${evidence.length === 1 ? '' : 's'}</summary><ul class="evidence">${evidence
+              .map((e) => {
+                  const node = e.nodeId && state.byId.get(e.nodeId);
+                  const where = e.file ? `<a class="loc" data-open-file="${esc(e.file)}" data-open-line="${e.line || 1}">${esc(e.file.split('/').pop() + (e.line ? `:${e.line}` : ''))}</a>` : '';
+                  return `<li>${e.claim ? `${esc(e.claim)} ` : ''}${node ? `${chip(node.id)} ` : ''}${where}</li>`;
+              })
+              .join('')}</ul></details>`
+        : '';
+    const conf = !ai.busy && ai.confidence
+        ? `<div class="muted"><span class="conf conf-${esc(ai.confidence)}">${esc(ai.confidence[0].toUpperCase() + ai.confidence.slice(1))} confidence.</span> ${esc(ai.confidenceReason || CONFIDENCE_TITLE[ai.confidence] || '')}</div>`
+        : '';
     const model = !ai.busy && ai.model ? `<div class="muted">Answered by ${esc(ai.model)}</div>` : '';
-    el.innerHTML = `<div class="q">${esc(ai.question)}</div>${steps}${busy}<div class="text">${mdLite(ai.answer)}</div>${model}`;
+    el.innerHTML = `<div class="q">${esc(ai.question)}</div>${steps}${busy}<div class="text">${mdLite(ai.answer)}</div>${sources}${conf}${model}`;
 }
 
 function renderHistory() {
@@ -1290,37 +1423,305 @@ function renderHistory() {
     $('historyClear').classList.toggle('hidden', !entries.length);
 }
 
-/** The selected node and its AI summary (asked for only while the panel is open). */
+/** Bring the side panel up to date with the selection: the Details tab and the question's context. */
 function renderSelection() {
-    const box = $('selInfo');
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    if (!state.ai.open || !n) {
-        box.classList.add('hidden');
-        return;
+    renderContext();
+    if (!state.ai.question) renderSuggestions();
+    if (state.side.open && state.side.tab === 'details') renderDetails();
+}
+
+/** A link to a node: click goes to it in the graph, Ctrl+click opens its source. */
+function chip(/** @type {string} */ id, extra = '') {
+    const n = state.byId.get(id);
+    if (!n) return `<span class="chip missing">${esc(id)}</span>`;
+    const status = n.status ? ` st-${n.status}` : '';
+    return `<a class="chip${status}" data-node="${esc(id)}" title="${esc(`${n.qname || n.file} · Ctrl+click to open the source`)}"><span class="dot k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span>${esc(shortName(n))}${extra}</a>`;
+}
+
+const plural = (/** @type {number} */ k, /** @type {string} */ word, many = `${word}s`) => `${k} ${k === 1 ? word : many}`;
+
+/** A plain-language description from the graph, shown until (or instead of) the AI summary. */
+function describeNode(/** @type {GraphNode} */ n) {
+    const out = state.out.get(n.id) || [];
+    const inc = state.inc.get(n.id) || [];
+    const kids = state.children.get(n.id) || [];
+    const distinct = (/** @type {GraphEdge[]} */ list, /** @type {string} */ kind, /** @type {'s' | 't'} */ end) => new Set(list.filter((e) => e.kind === kind).map((e) => e[end])).size;
+    const count = (/** @type {string} */ kind) => kids.filter((c) => c.kind === kind).length;
+    const parent = n.parent !== undefined ? state.byId.get(n.parent) : undefined;
+    switch (n.kind) {
+        case 'file': {
+            let s = `${n.header ? 'A header file' : 'A source file'} with ${plural(kids.length, 'top-level item')}`;
+            if (n.header) s += `, included by ${plural(distinct(inc, 'includes', 's'), 'file')}`;
+            return `${s}.`;
+        }
+        case 'class':
+        case 'struct': {
+            let s = `A ${n.kind} with ${plural(count('method'), 'method')} and ${plural(count('field'), 'field')}.`;
+            const bases = distinct(out, 'inherits', 't');
+            const derived = distinct(inc, 'inherits', 's');
+            if (bases) s += ` It derives from ${plural(bases, 'base class', 'base classes')}.`;
+            if (derived) s += ` ${plural(derived, 'class derives', 'classes derive')} from it.`;
+            return s;
+        }
+        case 'function':
+        case 'method': {
+            let s =
+                n.kind === 'method'
+                    ? `A ${n.isPure ? 'pure virtual ' : n.isVirtual ? 'virtual ' : n.isStatic ? 'static ' : ''}member function of ${esc(parent?.name || '?')}.`
+                    : `A ${n.isStatic ? 'file-local (static) ' : ''}function.`;
+            if (n.name === 'main') s += ' This is the program entry point.';
+            s += ` It calls ${plural(distinct(out, 'calls', 't'), 'known function')} and is called from ${plural(distinct(inc, 'calls', 's'), 'place')} in this codebase.`;
+            if (!n.defFile && !n.isPure) s += ' No definition was found in the workspace (a library API, or defined elsewhere).';
+            return s;
+        }
+        case 'enum':
+            return 'An enumeration.';
+        case 'typedef':
+            return 'A type alias (typedef).';
+        case 'field':
+            return `A data member of ${esc(parent?.name || '?')}.`;
+        case 'namespace':
+            return `A namespace block containing ${plural(kids.length, 'item')}.`;
     }
-    let summary = state.summaries.get(n.id);
-    if (!summary && n.status !== 'removed') {
-        summary = { status: 'loading' };
-        state.summaries.set(n.id, summary);
+    return '';
+}
+
+/** One fold of related nodes, merged by the node at the other end. */
+function relationSection(/** @type {string} */ title, /** @type {GraphEdge[]} */ edges, /** @type {'s' | 't'} */ end, closed = false) {
+    if (!edges.length) return '';
+    /** @type {Map<string, {n: number, uncertain: boolean, site?: {file: string, line: number}, label?: string, status?: string}>} */
+    const seen = new Map();
+    for (const e of /** @type {any[]} */ (edges)) {
+        const other = e[end];
+        const cur = seen.get(other);
+        if (cur) {
+            cur.n += e.n || 1;
+            cur.uncertain = cur.uncertain && !!e.uncertain;
+        } else seen.set(other, { n: e.n || 1, uncertain: !!e.uncertain, site: e.sites?.[0], label: e.label || e.relation, status: e.status });
+    }
+    const name = (/** @type {string} */ id) => state.byId.get(id)?.name || id;
+    const items = [...seen].sort((a, b) => name(a[0]).localeCompare(name(b[0])));
+    const shown = items.slice(0, 80);
+    const rows = shown
+        .map(([other, info]) => {
+            const extra = (info.n > 1 ? ` <span class="muted">×${info.n}</span>` : '') + (info.uncertain ? ' <span class="muted" title="Matched by name only: a best guess">?</span>' : '');
+            const label = info.label ? ` <span class="muted">${esc(info.label)}</span>` : '';
+            const st = info.status ? ` <span class="pill st-${esc(info.status)}">${esc(info.status)}</span>` : '';
+            const site = info.site ? ` <a class="site" data-open-file="${esc(info.site.file)}" data-open-line="${info.site.line}" title="Go to ${esc(`${info.site.file}:${info.site.line}`)}">↗</a>` : '';
+            return `<li>${chip(other, extra)}${label}${st}${site}</li>`;
+        })
+        .join('');
+    const more = items.length > shown.length ? `<li class="muted">… and ${items.length - shown.length} more</li>` : '';
+    return `<details${closed ? '' : ' open'}><summary>${esc(title)} <span class="muted">${items.length}</span></summary><ul class="rel">${rows}${more}</ul></details>`;
+}
+
+/** For a file or class: which other files the code inside it depends on, and which depend on it. */
+function dependencySections(/** @type {string} */ id) {
+    const file = (/** @type {string} */ x) => fileOf(x);
+    const inside = (/** @type {string} */ x) => x === id || boxesAround(x).includes(id);
+    /** @type {Map<string, number>} */ const outFiles = new Map();
+    /** @type {Map<string, number>} */ const inFiles = new Map();
+    for (const e of state.data?.edges ?? []) {
+        if (FILE_EDGES.has(e.kind)) continue;
+        const a = inside(e.s);
+        const b = inside(e.t);
+        if (a === b) continue;
+        const [map, other] = a ? [outFiles, file(e.t)] : [inFiles, file(e.s)];
+        if (other !== id) map.set(other, (map.get(other) || 0) + (e.n || 1));
+    }
+    const list = (/** @type {Map<string, number>} */ m, /** @type {string} */ title) =>
+        m.size
+            ? `<details><summary>${title} <span class="muted">${m.size}</span></summary><ul class="rel">${[...m]
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 60)
+                  .map(([f, c]) => `<li>${chip(f, ` <span class="muted">×${c}</span>`)}</li>`)
+                  .join('')}</ul></details>`
+            : '';
+    return list(outFiles, 'Depends on files') + list(inFiles, 'Files that depend on this');
+}
+
+/** Concepts the AI layer tagged a node with; click one to highlight everything tagged with it. */
+function conceptPills(/** @type {string} */ id) {
+    const tags = state.data?.concepts?.[id];
+    if (!tags?.length) return '';
+    return `<div class="concepts"><span class="aibadge" title="Concepts tagged by the AI">AI</span>${tags.map((t) => `<a class="concept" data-concept="${esc(t)}">${esc(t)}</a>`).join('')}</div>`;
+}
+
+/** The start page: how to use the graph, good places to start, and the concepts the AI tagged. */
+function introHtml() {
+    const nodes = state.data?.nodes ?? [];
+    const mains = nodes.filter((n) => n.name === 'main' && n.kind === 'function');
+    const degree = (/** @type {GraphNode} */ n) => (state.out.get(n.id)?.length || 0) + (state.inc.get(n.id)?.length || 0);
+    const classes = nodes
+        .filter((n) => n.kind === 'class' || n.kind === 'struct')
+        .sort((a, b) => degree(b) - degree(a))
+        .slice(0, 8);
+    const start = mains.length || classes.length
+        ? `<h3>Good places to start</h3><ul class="rel">${mains.map((m) => `<li>${chip(m.id, ' <span class="muted">entry point</span>')}</li>`).join('')}${classes.map((c) => `<li>${chip(c.id)}</li>`).join('')}</ul>`
+        : '';
+    /** @type {Map<string, number>} */
+    const counts = new Map();
+    for (const tags of Object.values(state.data?.concepts ?? {})) for (const t of tags) counts.set(t, (counts.get(t) || 0) + 1);
+    const concepts = counts.size
+        ? `<h3>Concepts</h3><div class="concepts">${[...counts]
+              .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+              .slice(0, 40)
+              .map(([t, c]) => `<a class="concept" data-concept="${esc(t)}">${esc(t)} <span class="muted">${c}</span></a>`)
+              .join('')}</div>`
+        : '';
+    return `<div class="intro">
+      <h3>Explore the code</h3>
+      <ul>
+        <li><b>Click</b> a file or class to open it, a function to see its code inline.</li>
+        <li><b>Double-click</b> to jump to the source in the editor.</li>
+        <li>Selecting a node shows what it is and how it connects, here.</li>
+        <li>Choose which arrows to draw under <b>Arrows</b>; scroll to zoom, drag to pan.</li>
+      </ul>
+      ${start}${concepts}
+    </div>`;
+}
+
+/** The AI summary of a node, asked for the first time the node is shown. */
+function summaryHtml(/** @type {GraphNode} */ n) {
+    let s = state.summaries.get(n.id);
+    if (!s && n.status !== 'removed') {
+        s = { status: 'loading' };
+        state.summaries.set(n.id, s);
         send({ type: 'getSummary', id: n.id });
     }
-    const text =
-        summary?.status === 'ready' ? esc(summary.text) : summary?.status === 'loading' ? '<span class="muted">Describing…</span>' : '';
-    box.innerHTML = `<b>${esc(n.name)}</b> <span class="muted">${esc(KIND_LABEL[n.kind] || n.kind)}</span>${text ? `<div>${text}</div>` : ''}`;
-    box.classList.toggle('hidden', false);
+    if (!s) return '';
+    if (s.status === 'loading') return '<div class="aisum muted">Describing…</div>';
+    if (s.status === 'none') return s.note ? `<div class="aisum muted">${esc(s.note)}</div>` : '';
+    const tags = (s.tags || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('');
+    const notes = (s.notes || []).length ? `<ul>${(s.notes || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+    return `<div class="aisum" title="${esc(s.model ? `Summary by ${s.model}` : 'AI summary')}"><span class="aibadge">AI</span><button class="card-btn refresh" data-act="resummarize" title="Describe it again">↻</button><p>${esc(s.text)}</p>${tags ? `<div class="tags">${tags}</div>` : ''}${notes}</div>`;
 }
+
+function renderDetails() {
+    const el = $('tab-details');
+    const n = state.selected ? state.byId.get(state.selected) : undefined;
+    if (!n) {
+        el.innerHTML = introHtml();
+        return;
+    }
+    const out = state.out.get(n.id) || [];
+    const inc = state.inc.get(n.id) || [];
+    const loc = (/** @type {string} */ label, /** @type {string} */ file, /** @type {number | undefined} */ line) =>
+        `<div class="kv"><span>${label}</span><a class="loc" data-open-file="${esc(file)}" data-open-line="${line || 1}">${esc(`${file}:${line || 1}`)}</a></div>`;
+    let locs = '';
+    if (n.declFile) locs = loc('Declared', n.declFile, n.declLine) + loc('Defined', n.defFile || n.file, n.defLine || n.line);
+    else if (n.defFile && (n.defFile !== n.file || n.defLine !== n.line)) locs = loc('Declared', n.file, n.line) + loc('Defined', n.defFile, n.defLine);
+    else locs = loc(n.kind === 'file' ? 'File' : 'Location', n.file, n.line);
+
+    const kids = state.children.get(n.id) || [];
+    const contains = kids.length
+        ? `<details${kids.length <= 40 ? ' open' : ''}><summary>Contains <span class="muted">${kids.length}</span></summary><ul class="rel">${kids
+              .slice(0, 150)
+              .map((c) => `<li>${chip(c.id)}</li>`)
+              .join('')}${kids.length > 150 ? `<li class="muted">… and ${kids.length - 150} more</li>` : ''}</ul></details>`
+        : '';
+    // Calls are what most people look for first; the other relationships wait under one fold.
+    const byKind = (/** @type {GraphEdge[]} */ list, /** @type {string} */ kind) => list.filter((e) => e.kind === kind);
+    const rels = relationSection(REL_TITLES.calls[0], byKind(out, 'calls'), 't') + relationSection(REL_TITLES.calls[1], byKind(inc, 'calls'), 's');
+    let more = '';
+    for (const [kind, [outTitle, inTitle]] of Object.entries(REL_TITLES)) {
+        if (kind === 'calls') continue;
+        more += relationSection(outTitle, byKind(out, kind), 't', true) + relationSection(inTitle, byKind(inc, kind), 's', true);
+    }
+    if (n.kind === 'file' || n.kind === 'class' || n.kind === 'struct' || n.kind === 'namespace') more += dependencySections(n.id);
+    const moreCount = (more.match(/<details/g) || []).length;
+    const moreRels = more ? `<details class="morerels"><summary>More relationships <span class="muted">${moreCount}</span></summary>${more}</details>` : '';
+
+    const isFn = n.kind === 'function' || n.kind === 'method';
+    const box = isBox(n.id);
+    const flags = [KIND_LABEL[n.kind] || n.kind, n.access, n.isPure ? 'pure virtual' : n.isVirtual ? 'virtual' : '', n.isOverride ? 'override' : '', n.isStatic ? 'static' : ''].filter(Boolean);
+    const status = n.status ? ` <span class="pill st-${esc(n.status)}">${esc(n.status)}</span>` : '';
+    const hasDecl = !!n.declFile || (!!n.defFile && n.defFile !== n.file);
+    el.innerHTML = `
+    <div class="dhead"><span class="dot big k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span><div><div class="dname">${esc(n.name)}${status}</div><div class="muted">${esc(flags.join(' · '))}</div></div></div>
+    ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
+    ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
+    ${summaryHtml(n)}
+    ${conceptPills(n.id)}
+    ${state.summaries.get(n.id)?.status === 'ready' ? '' : `<p class="desc">${describeNode(n)}</p>`}
+    ${locs}
+    <div class="actions">
+      <button data-act="open" class="primary" title="Open it in the editor">Open source</button>
+      ${hasDecl ? '<button data-act="decl" title="Open its declaration">Declaration</button>' : ''}
+      ${box ? `<button data-act="toggle">${state.expanded.has(n.id) ? 'Close' : 'Open'} in graph</button>` : n.kind !== 'file' ? `<button data-act="code" title="Show or hide the code inside the graph">${state.openCode.has(n.id) ? 'Hide code' : 'Show code'}</button>` : ''}
+      <button data-act="center" title="Center the graph on it">Center</button>
+    </div>
+    <div class="actions">
+      <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
+      ${isFn ? '<button data-act="trace" title="Ask the AI to trace the execution path starting here">Trace path with AI</button>' : ''}
+    </div>
+    ${contains}
+    ${rels}${moreRels}
+    ${rels || moreRels || kids.length ? '' : '<p class="muted">No relationships found.</p>'}`;
+}
+
+$('tab-details').addEventListener('click', (ev) => {
+    const target = /** @type {HTMLElement} */ (ev.target);
+    const n = state.selected ? state.byId.get(state.selected) : undefined;
+    const node = /** @type {HTMLElement | null} */ (target.closest('[data-node]'))?.dataset.node;
+    if (node) {
+        ev.preventDefault();
+        if (ev.ctrlKey || ev.metaKey) openSource(node);
+        else focusNode(node);
+        return;
+    }
+    const link = /** @type {HTMLElement | null} */ (target.closest('[data-open-file]'));
+    if (link) {
+        ev.preventDefault();
+        send({ type: 'openLocation', file: link.dataset.openFile || '', line: Number(link.dataset.openLine) || 1 });
+        return;
+    }
+    const concept = /** @type {HTMLElement | null} */ (target.closest('[data-concept]'))?.dataset.concept;
+    if (concept) {
+        const concepts = state.data?.concepts ?? {};
+        highlightNodes(Object.keys(concepts).filter((id) => state.byId.has(id) && concepts[id].includes(concept)));
+        return;
+    }
+    const act = /** @type {HTMLElement | null} */ (target.closest('[data-act]'))?.dataset.act;
+    if (!act || !n) return;
+    if (act === 'open') openSource(n.id);
+    else if (act === 'decl') {
+        const decl = n.declFile ? { file: n.declFile, line: n.declLine } : { file: n.file, line: n.line };
+        send({ type: 'openLocation', file: decl.file, line: decl.line || 1 });
+    } else if (act === 'toggle') toggle(n.id);
+    else if (act === 'code') toggleCode(n.id);
+    else if (act === 'center') focusNode(n.id);
+    else if (act === 'explain') ask(explainQuestion(n), 'ask', n.id);
+    else if (act === 'trace') ask(`What happens when ${n.qname || n.name} runs?`, 'path', n.id);
+    else if (act === 'resummarize') {
+        state.summaries.set(n.id, { status: 'loading' });
+        send({ type: 'getSummary', id: n.id, refresh: true });
+        renderDetails();
+    }
+});
 
 /** @param {Extract<ToWebviewMessage, {type: 'summary'}>} m */
 function receiveSummary(m) {
     if (m.cancelled) state.summaries.delete(m.id); // asked again on the next selection
-    else if (m.summary) state.summaries.set(m.id, { status: 'ready', text: m.summary.purpose, model: m.model });
-    else state.summaries.set(m.id, { status: 'none' });
+    else if (m.summary) state.summaries.set(m.id, { status: 'ready', text: m.summary.purpose, tags: m.summary.tags, notes: m.summary.notes, model: m.model });
+    else {
+        const note = m.unavailable ? 'An AI description needs a language model in VS Code (for example GitHub Copilot Chat).' : m.error ? `Could not describe it: ${m.error}` : '';
+        state.summaries.set(m.id, { status: 'none', note });
+    }
     if (m.id === state.selected) renderSelection();
 }
 
 /** @param {Extract<ToWebviewMessage, {type: 'aiResult'}>} m */
 function receiveAnswer(m) {
-    Object.assign(state.ai, { busy: false, answer: m.answer, error: !!m.error, model: m.model });
+    Object.assign(state.ai, {
+        busy: false,
+        answer: m.answer,
+        error: !!m.error,
+        model: m.model,
+        evidence: m.evidence || [],
+        confidence: m.confidence,
+        confidenceReason: m.confidenceReason,
+    });
     if (!m.error && !m.cancelled) /** @type {HTMLTextAreaElement} */ ($('question')).value = '';
     renderAnswer();
     if (m.highlight?.length || m.path?.length) highlightNodes(m.highlight || [], m.path || []);
@@ -1330,8 +1731,7 @@ $('askForm').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const q = /** @type {HTMLTextAreaElement} */ ($('question')).value.trim();
     if (!q || state.ai.busy) return;
-    const mode = /** @type {HTMLInputElement} */ ($('pathMode')).checked ? 'path' : 'ask';
-    send({ type: 'ask', question: q, focus: state.selected || undefined, mode });
+    ask(q, /** @type {HTMLInputElement} */ ($('pathMode')).checked ? 'path' : 'ask', contextNode()?.id);
 });
 $('question').addEventListener('keydown', (ev) => {
     // Enter asks; Shift+Enter adds a line.
@@ -1342,15 +1742,36 @@ $('question').addEventListener('keydown', (ev) => {
 });
 $('cancelAsk').onclick = () => send({ type: 'cancelAsk' });
 $('answer').addEventListener('click', (ev) => {
-    const ref = /** @type {HTMLElement | null} */ (/** @type {HTMLElement} */ (ev.target).closest('[data-node]'));
-    if (ref?.dataset.node) focusNode(ref.dataset.node);
+    const target = /** @type {HTMLElement} */ (ev.target);
+    const ref = /** @type {HTMLElement | null} */ (target.closest('[data-node]'));
+    if (ref?.dataset.node) {
+        ev.preventDefault();
+        if (ev.ctrlKey || ev.metaKey) openSource(ref.dataset.node);
+        else focusNode(ref.dataset.node);
+        return;
+    }
+    const link = /** @type {HTMLElement | null} */ (target.closest('[data-open-file]'));
+    if (link) {
+        ev.preventDefault();
+        send({ type: 'openLocation', file: link.dataset.openFile || '', line: Number(link.dataset.openLine) || 1 });
+    }
 });
 $('history').addEventListener('change', () => {
     const sel = /** @type {HTMLSelectElement} */ ($('history'));
     const entry = state.ai.history.find((e) => e.id === sel.value);
     sel.value = '';
     if (!entry) return;
-    Object.assign(state.ai, { busy: false, question: entry.question, answer: entry.answer, steps: entry.steps || [], error: false, model: entry.model });
+    Object.assign(state.ai, {
+        busy: false,
+        question: entry.question,
+        answer: entry.answer,
+        steps: entry.steps || [],
+        error: false,
+        model: entry.model,
+        evidence: entry.evidence || [],
+        confidence: entry.confidence,
+        confidenceReason: entry.confidenceReason,
+    });
     renderAnswer();
     highlightNodes(entry.highlight || [], entry.path || []);
 });
@@ -1416,10 +1837,24 @@ function loadGraph(m) {
     state.byId = new Map(data.nodes.map((n) => [n.id, n]));
     state.childCount = new Map();
     state.descCount = new Map();
+    state.children = new Map();
     for (const n of data.nodes) {
         if (n.kind === 'file' || !n.parent) continue;
         state.childCount.set(n.parent, (state.childCount.get(n.parent) || 0) + 1);
+        const kids = state.children.get(n.parent);
+        if (kids) kids.push(n);
+        else state.children.set(n.parent, [n]);
         for (const box of boxesAround(n.id)) state.descCount.set(box, (state.descCount.get(box) || 0) + 1);
+    }
+    state.out = new Map();
+    state.inc = new Map();
+    for (const e of data.edges) {
+        let list = state.out.get(e.s);
+        if (!list) state.out.set(e.s, (list = []));
+        list.push(e);
+        list = state.inc.get(e.t);
+        if (!list) state.inc.set(e.t, (list = []));
+        list.push(e);
     }
     for (const id of [...state.expanded]) if (!state.byId.has(id)) state.expanded.delete(id);
     if (state.selected && !state.byId.has(state.selected)) state.selected = null;
@@ -1482,8 +1917,8 @@ window.addEventListener('message', (event) => {
             break;
         case 'aiStart':
             // Also for questions asked from the command palette.
-            Object.assign(state.ai, { busy: true, question: m.question, answer: '', steps: [], error: false, model: undefined });
-            if (!state.ai.open) setAiOpen(true);
+            Object.assign(state.ai, { busy: true, question: m.question, answer: '', steps: [], error: false, model: undefined, evidence: [], confidence: undefined, confidenceReason: undefined });
+            if (!state.side.open || state.side.tab !== 'ai') setSide(true, 'ai');
             renderAnswer();
             break;
         case 'aiPartial':
@@ -1514,6 +1949,6 @@ renderLegend();
 renderEdgeModes();
 renderAnswer();
 renderHistory();
-if (state.ai.open) setAiOpen(true);
+setSide(state.side.open);
 setStatus('Loading…', undefined, true);
 send({ type: 'ready' });

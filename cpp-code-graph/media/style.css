@@ -444,24 +444,289 @@ button.on {
   color: var(--vscode-button-foreground, #fff);
 }
 
-/* Ask AI panel */
+/* Side panel: Details and Ask AI tabs */
 
-.ai {
+.side {
   flex: none;
   width: min(380px, 45%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
   border-left: 1px solid var(--cg-border);
   background: var(--cg-panel);
   overflow: hidden;
 }
-.ai-head {
+.tabs {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 2px;
+  padding: 4px 6px 0;
+  border-bottom: 1px solid var(--cg-border);
 }
+.tabs [data-tab] {
+  background: none;
+  color: var(--cg-muted);
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px;
+}
+.tabs [data-tab]:hover {
+  color: var(--cg-fg);
+}
+.tabs [data-tab].active {
+  color: var(--cg-fg);
+  border-bottom-color: var(--cg-focus);
+}
+.tabbody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.tabbody.ask {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+}
+.muted {
+  color: var(--cg-muted);
+}
+
+/* Details tab */
+
+.details h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cg-muted);
+  margin: 14px 0 6px;
+}
+.details .intro ul {
+  padding-left: 18px;
+  margin: 4px 0;
+}
+.dhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.dname {
+  font-weight: 600;
+  font-size: 14px;
+  word-break: break-word;
+}
+.qname {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  color: var(--cg-muted);
+  word-break: break-all;
+}
+.sig {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(128, 128, 128, 0.12);
+  padding: 6px;
+  border-radius: 4px;
+  margin: 6px 0;
+}
+.desc {
+  margin: 6px 0;
+}
+.kv {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  margin: 2px 0;
+}
+.kv > span {
+  color: var(--cg-muted);
+  min-width: 5.5em;
+}
+a.loc,
+a.site,
+a.sugg,
+a.concept {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  cursor: pointer;
+  text-decoration: none;
+  word-break: break-all;
+}
+a.loc:hover,
+a.site:hover,
+a.sugg:hover,
+a.concept:hover {
+  text-decoration: underline;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 4px;
+}
+.actions button.primary {
+  background: var(--vscode-button-background, #0e639c);
+  color: var(--vscode-button-foreground, #fff);
+}
+.details details {
+  margin: 6px 0;
+}
+.details summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+}
+.details details.morerels > details {
+  margin-left: 12px;
+}
+ul.rel {
+  list-style: none;
+  padding: 0;
+  margin: 4px 0 0 4px;
+}
+ul.rel li {
+  margin: 2px 0;
+}
+a.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cg-fg);
+  cursor: pointer;
+  text-decoration: none;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+a.chip:hover {
+  background: rgba(128, 128, 128, 0.18);
+}
+a.chip.st-removed {
+  text-decoration: line-through;
+}
+.chip.missing {
+  color: var(--cg-muted);
+}
+.dot {
+  flex: none;
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  border: 2px solid var(--cg-muted);
+}
+.dot.big {
+  width: 14px;
+  height: 14px;
+}
+.dot.k-file { border-color: var(--cg-source); border-radius: 0; }
+.dot.k-file.hdr { border-color: var(--cg-header); }
+.dot.k-function,
+.dot.k-method { border-color: var(--cg-function); border-radius: 4px; }
+.dot.k-struct,
+.dot.k-class { border-color: var(--cg-type); border-radius: 0; }
+.dot.k-enum { border-color: var(--cg-enum); }
+.dot.k-typedef,
+.dot.k-field { border-color: var(--cg-typedef); }
+.pill {
+  display: inline-block;
+  font-size: 11px;
+  padding: 0 6px;
+  margin-left: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--cg-border);
+  color: var(--cg-muted);
+  font-weight: normal;
+}
+.pill.st-added { border-color: var(--cg-added); color: var(--cg-added); }
+.pill.st-modified { border-color: var(--cg-modified); color: var(--cg-modified); }
+.pill.st-removed { border-color: var(--cg-removed); color: var(--cg-removed); }
+.aisum {
+  position: relative;
+  margin: 8px 0;
+  padding: 6px 8px;
+  border: 1px solid var(--cg-border);
+  border-radius: 4px;
+}
+.aisum p {
+  margin: 4px 0 0;
+}
+.aisum ul {
+  padding-left: 18px;
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.aisum .tags {
+  margin-top: 4px;
+}
+.aisum .tags .pill:first-child {
+  margin-left: 0;
+}
+.aisum .refresh {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+}
+.aibadge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--cg-focus);
+  color: var(--vscode-button-foreground, #fff);
+  margin-right: 6px;
+}
+.concepts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0;
+}
+
+/* Ask AI tab */
+
+.ctx {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: none;
+  border: 1px dashed var(--cg-border);
+  color: var(--cg-muted);
+  padding: 2px 6px;
+}
+.ctx.on {
+  border-style: solid;
+  border-color: var(--cg-focus);
+  color: var(--cg-fg);
+}
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+.answer details.fold {
+  margin: 6px 0;
+  font-size: 12px;
+}
+.answer details.fold summary {
+  cursor: pointer;
+  color: var(--cg-muted);
+}
+.answer ul.evidence {
+  padding-left: 18px;
+}
+.conf-high { color: var(--cg-added); }
+.conf-medium { color: var(--cg-modified); }
+.conf-low { color: var(--cg-removed); }
 .ask-form textarea {
   width: 100%;
   resize: vertical;
@@ -486,16 +751,6 @@ button.on {
 #askBtn {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
-}
-.sel-info {
-  font-size: 12px;
-  line-height: 1.45;
-  padding: 6px 8px;
-  border: 1px solid var(--cg-border);
-  border-radius: 4px;
-}
-.sel-info .muted {
-  color: var(--cg-muted);
 }
 .answer {
   flex: 1;
