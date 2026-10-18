@@ -51,6 +51,11 @@
         "category": "Code Graph"
       },
       {
+        "command": "codeGraph.buildSemantic",
+        "title": "Build AI Layer (Concepts and Inferred Links)",
+        "category": "Code Graph"
+      },
+      {
         "command": "codeGraph.ask",
         "title": "Ask a Question About the Code",
         "category": "Code Graph"

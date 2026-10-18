@@ -275,5 +275,38 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   await onMessage({ type: 'impactCheck', id: logId, changeType: 'signature' });
   const chk = posted.find(m => m.type === 'impactCheckResult');
   if (!chk || chk.error || chk.compared !== 'symbols' || chk.targetChanged !== null || chk.changedCount !== 0 || chk.hits.length !== 0) throw new Error('bad impact check ' + JSON.stringify(chk));
+
+  // The AI layer: built with a progress notification, saved, and merged into the graph the webview gets.
+  const infos = [];
+  vscode.ProgressLocation = { Notification: 15 };
+  vscode.window.withProgress = async (opts, fn) => fn({ report() {} }, { isCancellationRequested: false });
+  vscode.window.showInformationMessage = m => infos.push(m);
+  let semCalls = 0;
+  const semModel = {
+    name: 'Layer', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages) {
+      semCalls++;
+      const p = messages[0].content;
+      let reply;
+      if (p.startsWith('You are labeling')) reply = JSON.stringify(Object.fromEntries((p.match(/^E\d+(?= )/gm) || []).map(r => [r, ['drawing']])));
+      else reply = JSON.stringify((p.match(/^P\d+(?= )/gm) || []).map(ref => ({ ref, relation: 'alternative', confidence: 0.8, reason: 'same job' })));
+      return { text: (async function* () { yield reply; })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [semModel];
+  posted.length = 0;
+  await onMessage({ type: 'buildSemantic' });
+  const layerState = workspaceStore.get('codeGraph.semanticLayer');
+  if (!layerState || layerState.model !== 'Layer' || layerState.edges.length !== 2 || !Object.keys(layerState.concepts).length) throw new Error('layer not saved ' + JSON.stringify(layerState && { m: layerState.model, e: layerState.edges.length }));
+  const lg = posted.filter(m => m.type === 'graph').pop();
+  if (!lg || lg.graph.edges.filter(e => e.kind === 'semantic').length !== 2 || !lg.graph.concepts[renderId] || lg.graph.semantic.edges !== 2) throw new Error('layer not in the posted graph');
+  if (posted.filter(m => m.type === 'semanticBuilding').map(m => m.busy).join() !== 'true,false') throw new Error('busy state not posted');
+  if (!/2 inferred links/.test(infos.pop())) throw new Error('no summary message');
+  // The workspace graph itself is not changed: impact and summaries see only the code's relationships.
+  if (g.graph.edges.some(e => e.kind === 'semantic')) throw new Error('semantic edges leaked into the workspace graph');
+  // A second build asks nothing.
+  const before = semCalls;
+  await onMessage({ type: 'buildSemantic' });
+  if (semCalls !== before) throw new Error('rebuild asked again: ' + (semCalls - before));
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });

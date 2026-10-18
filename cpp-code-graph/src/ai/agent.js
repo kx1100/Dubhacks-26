@@ -16,7 +16,7 @@ const MAX_STEPS = 12;
 const PRELOAD_MAX = 5; // functions whose source is given up front
 const PRELOAD_LINES = 60; // lines of each
 const RESULT_CHARS = 6000; // longest tool result sent back to the model
-const EDGE_KINDS = ['calls', 'includes', 'inherits', 'overrides', 'uses', 'pairs'];
+const EDGE_KINDS = ['calls', 'includes', 'inherits', 'overrides', 'uses', 'pairs', 'semantic'];
 
 const nodeArg = { type: 'string', description: 'Node ref such as N12 (preferred), or a qualified name such as geo::Canvas::render, or a file name.' };
 const kindsArg = { type: 'array', items: { type: 'string', enum: EDGE_KINDS }, description: 'Relationship kinds to follow. Omit for all.' };
@@ -117,7 +117,7 @@ const TOOLS = [
 const SYSTEM = `You are investigating a C/C++ codebase for a developer who sees it as an interactive graph of files, classes and functions.
 Do not guess: use the tools to find symbols, follow relationships and read code, and check each idea against the source before relying on it.
 Nodes are identified by refs such as N12. Pass refs to tools, and refer to nodes in your answer as [[N12]] so they become clickable.
-Relationships: calls (function -> function), includes (file -> header), inherits (derived -> base), overrides (method -> base method), uses (code -> type), pairs (header -> source file implementing it).
+Relationships: calls (function -> function), includes (file -> header), inherits (derived -> base), overrides (method -> base method), uses (code -> type), pairs (header -> source file implementing it), semantic (AI-inferred, when built: alternative implementations, replacements, validators; check them against the code).
 Calls marked "uncertain" were matched by name only. Calls through function pointers, callbacks and macros are missing from the graph; grep can find them.
 Work efficiently: you have at most ${MAX_STEPS} rounds of tool calls, and several independent calls can be made in one round. Stop as soon as you can answer well.
 Then call finish. Write for someone who may be new to the code: clear and concise (under 250 words unless needed).

@@ -107,6 +107,8 @@ Phase 5 continues as one engine, a bounded tool-calling agent over deterministic
 - **5h** Change impact with the LLM: classification of each affected site, and a check of the prediction against the actual git diff.
 - **5i** Semantic layer: AI-inferred edges and concept tags, each with evidence, confidence and provenance, shown as an optional edge kind.
 
+All of 5a–5i are implemented in `cpp-code-graph/src/ai/`; the cpp-code-graph README describes them.
+
 ### Phase 6: Commit diff view
 - Pick two commits, build both graphs from `git show`, and color the delta: green = added, red = removed, yellow = changed.
 

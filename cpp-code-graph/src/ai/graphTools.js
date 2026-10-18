@@ -53,6 +53,7 @@ class GraphTools {
     this.out = new Map();
     this.inc = new Map();
     this.sourceCache = new Map();
+    this.concepts = graph.concepts || {}; // node id -> concept tags, from the semantic layer
 
     let i = 0;
     for (const n of graph.nodes) {
@@ -127,6 +128,7 @@ class GraphTools {
       add(n.qname, 2);
       add(n.signature, 1);
       add(n.file, 1);
+      if (this.concepts[n.id]) add(this.concepts[n.id].join(' '), 2);
       let len = 0;
       for (const v of tf.values()) len += v;
       this.docs.push({ id: n.id, tf, len });
@@ -222,6 +224,7 @@ class GraphTools {
     const parent = n.parent && this.nodes.get(n.parent);
     if (parent && parent.kind !== 'dir') lines.push('inside: ' + this.label(parent));
     if (n.values && n.values.length) lines.push('values: ' + n.values.slice(0, 20).join(', '));
+    if (this.concepts[n.id]) lines.push('concepts (AI-tagged): ' + this.concepts[n.id].join(', '));
     const kids = (this.children.get(n.id) || []).map(id => this.nodes.get(id));
     if (kids.length) {
       lines.push(`contains (${kids.length}):`);
@@ -268,7 +271,8 @@ class GraphTools {
       const other = this.nodes.get(r.other);
       const site = r.e.sites && r.e.sites[0];
       const extra = [r.e.n > 1 ? 'x' + r.e.n : '', r.e.uncertain ? 'uncertain' : '', r.e.status || '', site ? 'at ' + site.file + ':' + site.line : ''].filter(Boolean).join(' ');
-      return (r.outgoing ? `${r.e.kind} -> ` : `<- ${r.e.kind} `) + this.label(other) + (extra ? ' (' + extra + ')' : '');
+      const kind = r.e.kind === 'semantic' ? `${r.e.label} [AI-inferred, ${Math.round(r.e.confidence * 100)}%]` : r.e.kind;
+      return (r.outgoing ? `${kind} -> ` : `<- ${kind} `) + this.label(other) + (extra ? ' (' + extra + ')' : '');
     };
     const shown = rows.slice(0, limit);
     const text = this.label(n) + '\n' + shown.map(fmt).join('\n') + (rows.length > limit ? `\n(${rows.length - limit} more)` : '');

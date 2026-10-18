@@ -1515,3 +1515,59 @@ ul.imp .vreason {
   font-size: 12px;
   margin: 4px 0;
 }
+
+/* AI layer: inferred links and concepts */
+
+:root {
+  --e-semantic: var(--purple);
+}
+.ek-semantic { --ec: var(--e-semantic); }
+.edge.ek-semantic .line {
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+  stroke-width: 2px;
+}
+.legend-line.ek-semantic {
+  stroke-dasharray: 2 4;
+  stroke-linecap: round;
+}
+.concepts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0;
+}
+a.concept {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  color: var(--purple);
+  border: 1px solid color-mix(in srgb, var(--purple) 60%, transparent);
+  cursor: pointer;
+  text-decoration: none;
+}
+a.concept:hover {
+  background: color-mix(in srgb, var(--purple) 15%, transparent);
+}
+.conf-num {
+  font-size: 10px;
+  color: var(--purple);
+  margin-left: 2px;
+}
+details.semrel summary {
+  color: var(--purple);
+}
+
+details.semrel .vreason,
+ul.semlist .vreason {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 4px;
+}
+details.semrel a.site,
+ul.semlist a.site {
+  white-space: nowrap;
+  word-break: normal;
+}

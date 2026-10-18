@@ -27,7 +27,8 @@
     { kind: 'overrides', label: 'Overrides', desc: 'method → base method it overrides' },
     { kind: 'includes', label: 'Includes', desc: 'file → included file' },
     { kind: 'uses', label: 'Uses type', desc: 'code → class/enum it depends on' },
-    { kind: 'pairs', label: 'Header ↔ source', desc: 'file that declares something → file that implements it (list.h → list.c)' }
+    { kind: 'pairs', label: 'Header ↔ source', desc: 'file that declares something → file that implements it (list.h → list.c)' },
+    { kind: 'semantic', label: 'AI-inferred', desc: 'links the AI found by reading the code: alternative implementations, replacements, validators (build the AI layer first)' }
   ];
   const REL_LABELS = {
     calls: ['Calls', 'Called by'],
@@ -35,9 +36,12 @@
     overrides: ['Overrides', 'Overridden by'],
     includes: ['Includes', 'Included by'],
     uses: ['Uses types', 'Used by'],
-    pairs: ['Implemented in', 'Declares things implemented here']
+    pairs: ['Implemented in', 'Declares things implemented here'],
+    semantic: ['AI-inferred links', 'AI-inferred links to it']
   };
-  const EDGE_VERBS = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type', pairs: 'is implemented in' };
+  const EDGE_VERBS = { calls: 'calls', inherits: 'inherits from', overrides: 'overrides', includes: 'includes', uses: 'uses type', pairs: 'is implemented in', semantic: 'is linked by the AI to' };
+  /** The verb for an edge: an AI-inferred one says what kind of link it is. */
+  const edgeVerb = e => (e.kind === 'semantic' && e.raw && e.raw[0] && e.raw[0].label) || EDGE_VERBS[e.kind];
 
   // Kinds whose source can be opened inside the node.
   const CODE_KINDS = new Set(['function', 'method', 'class', 'struct', 'union', 'enum', 'variable', 'field']);
@@ -115,7 +119,7 @@
     code: new Map(), // "id|side" -> {status, lines, html, startLine, file, truncated, error}
     selected: saved.selected || null,
     selectedEdge: null,
-    edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true }, saved.edgeOn || {}),
+    edgeOn: Object.assign({ calls: true, inherits: true, overrides: true, includes: true, uses: false, pairs: true, semantic: false }, saved.edgeOn || {}),
     showFields: saved.showFields !== undefined ? saved.showFields : true,
     showNamespaces: saved.showNamespaces !== undefined ? saved.showNamespaces : true,
     showUncertain: saved.showUncertain !== undefined ? saved.showUncertain : true,
@@ -134,6 +138,9 @@
     history: [], // saved AI answers for this workspace, newest first (kept by the extension)
     summaries: new Map(), // node id -> {status: loading|ready|error|unavailable|disabled, summary, model, cached}
     impact: null, // {target, changeType, busy, result} for the Impact tab
+    concepts: {}, // node id -> concept tags from the AI layer
+    semantic: null, // {model, time, edges, concepts, tagged} when the AI layer is built
+    semanticBusy: false,
     historyOpen: true,
     layout: null,
     savedMode: saved.mode || null
@@ -266,6 +273,8 @@
     S.title = title || '';
     S.compare = compare || (mode === 'diff' ? S.compare : null);
     S.nodes = new Map(graph.nodes.map(n => [n.id, n]));
+    S.concepts = graph.concepts || {};
+    S.semantic = graph.semantic || null;
     S.out = new Map();
     S.inc = new Map();
     for (const e of graph.edges) {
@@ -1891,8 +1900,11 @@
           <li>Scroll to zoom, drag the background to pan, <kbd>/</kbd> to search.</li>
         </ul>
         ${entryPoints()}
+        ${semanticIntro()}
       </div>`;
       bindLinks(el);
+      bindConcepts(el);
+      if ($('semBuild')) $('semBuild').onclick = () => vscode.postMessage({ type: 'buildSemantic' });
       return;
     }
     const info = KIND_INFO[n.kind] || { label: n.kind, glyph: '?' };
@@ -1920,6 +1932,7 @@
       rels += relationSection(REL_LABELS[k][0], byKind(out, k), 't');
       rels += relationSection(REL_LABELS[k][1], byKind(inc, k), 's');
     }
+    rels += semanticSection(n.id, out, inc);
     if (n.kind === 'file' || n.kind === 'dir' || n.kind === 'namespace' || n.kind === 'class' || n.kind === 'struct') rels += aggregatedDeps(n.id);
     const isFn = n.kind === 'function' || n.kind === 'method';
     const status = n.status ? `<span class="pill st-${n.status}">${n.status}</span>` : '';
@@ -1928,6 +1941,7 @@
       ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
       ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
       ${summaryBlock(n)}
+      ${conceptPills(n.id)}
       <p class="desc">${describeNode(n)}</p>
       ${locs}
       <div class="actions">
@@ -1975,6 +1989,7 @@
       };
     });
     bindLinks(el);
+    bindConcepts(el);
     bindSummary(n);
     scheduleSummary(n);
   }
@@ -2349,7 +2364,83 @@
     return `<h3>Good places to start</h3><ul class="rel">${mains.map(m => `<li>${nodeChip(m.id, ' <span class="muted">entry point</span>')}</li>`).join('')}${classes.map(c => `<li>${nodeChip(c.id)}</li>`).join('')}</ul>`;
   }
 
+  // ---------------------------------------------------------------------------
+  // AI layer: concepts and inferred links (see src/ai/semantic.js)
+
+  function conceptPills(id) {
+    const tags = S.concepts[id];
+    if (!tags || !tags.length) return '';
+    return `<div class="concepts"><span class="aibadge" title="Concepts tagged by the AI">AI</span>${tags.map(t => `<a class="concept" data-concept="${esc(t)}" title="Highlight everything tagged ${esc(t)}">${esc(t)}</a>`).join('')}</div>`;
+  }
+
+  /** One line per inferred link, with its confidence, reason and the line that shows it. */
+  function semanticItem(e, otherId, outgoing) {
+    const n = S.nodes.get(otherId);
+    if (!n) return '';
+    const label = e.symmetric || outgoing ? e.label : 'is ' + e.label.replace(/ of$/, '').replace(/^replaces$/, 'replaced by').replace(/^validates for$/, 'validated by');
+    const ev = e.evidence ? ` <a class="site" data-open-file="${esc(e.evidence.file)}" data-open-line="${e.evidence.line}" data-side="target" title="${esc(e.evidence.quote)}">${esc(e.evidence.file.split('/').pop() + ':' + e.evidence.line)}</a>` : ' <span class="tag" title="The AI gave no evidence that could be found in the code">no evidence</span>';
+    return `<li><span class="muted">${esc(label)}</span> ${nodeChip(otherId)} <span class="conf-num" title="How confident the AI is">${Math.round(e.confidence * 100)}%</span>${ev}${e.reason ? `<div class="vreason">${esc(e.reason)}</div>` : ''}</li>`;
+  }
+
+  function semanticSection(id, out, inc) {
+    const items = [
+      ...out.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.t, true)),
+      ...inc.filter(e => e.kind === 'semantic').map(e => semanticItem(e, e.s, false))
+    ].filter(Boolean);
+    if (!items.length) return '';
+    return `<details open class="semrel"><summary>AI-inferred links <span class="muted">${items.length}</span></summary><ul class="rel">${items.join('')}</ul></details>`;
+  }
+
+  function renderSemanticEdge(el, e) {
+    const items = e.raw.map(r => semanticItem(r, r.t, true).replace('<li>', `<li>${nodeChip(r.s)} `)).join('');
+    const r = e.raw[0];
+    const when = r.provenance && r.provenance.time ? ago(r.provenance.time) : '';
+    el.innerHTML = `<div class="dhead"><div><div class="dname">${nodeChip(e.s)} <span class="muted">${esc(edgeVerb(e))}</span> ${nodeChip(e.t)}</div>
+        <div class="muted">Inferred by the AI${r.provenance && r.provenance.model ? ' (' + esc(r.provenance.model) + ')' : ''}${when ? ', ' + when : ''}, not found in the code's structure. Check it before relying on it.</div></div></div>
+      ${r.hint ? `<p class="muted">Looked at because ${esc(r.hint)}.</p>` : ''}
+      <ul class="rel semlist">${items}</ul>`;
+    bindLinks(el);
+  }
+
+  /** Highlights every node tagged with a concept. */
+  function showConcept(tag) {
+    const ids = new Set(Object.keys(S.concepts).filter(id => S.nodes.has(id) && S.concepts[id].includes(tag)));
+    if (!ids.size) return;
+    S.highlight = { ids, path: [], label: 'Concept: ' + tag + ' (' + ids.size + ')' };
+    revealAll(ids);
+  }
+
+  function bindConcepts(el) {
+    el.querySelectorAll('[data-concept]').forEach(a => {
+      a.onclick = ev => {
+        ev.preventDefault();
+        showConcept(a.dataset.concept);
+      };
+    });
+  }
+
+  /** The AI layer part of the start page: concepts to explore, and building or rebuilding it. */
+  function semanticIntro() {
+    const busy = S.semanticBusy;
+    const btn = `<button id="semBuild" class="${S.semantic ? '' : 'primary'}"${busy ? ' disabled' : ''}>${busy ? 'Building…' : S.semantic ? 'Update AI layer' : 'Build AI layer'}</button>`;
+    if (!S.semantic) {
+      return `<h3>AI layer</h3><p class="muted">Let the AI tag every function and class with the concept it serves (logging, rendering, parsing…) and find links the structure doesn't show: alternative implementations, replacements, validators. Results are saved, and only changed code is looked at again.</p><div class="askrow">${btn}</div>`;
+    }
+    const counts = new Map();
+    for (const tags of Object.values(S.concepts)) for (const t of tags) counts.set(t, (counts.get(t) || 0) + 1);
+    const pills = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 40)
+      .map(([t, c]) => `<a class="concept" data-concept="${esc(t)}">${esc(t)} <span class="muted">${c}</span></a>`)
+      .join('');
+    const s = S.semantic;
+    return `<h3>Concepts</h3><div class="concepts">${pills || '<span class="muted">No concepts yet.</span>'}</div>
+      <p class="muted">AI layer: ${s.concepts} concept${s.concepts === 1 ? '' : 's'} on ${s.tagged} element${s.tagged === 1 ? '' : 's'}, ${s.edges} inferred link${s.edges === 1 ? '' : 's'} (turn on <b>AI-inferred</b> under <b>Show ▾</b>)${s.model ? ', by ' + esc(s.model) : ''}${s.time ? ', ' + ago(s.time) : ''}.</p>
+      <div class="askrow">${btn}</div>`;
+  }
+
   function renderEdgeDetails(el, e) {
+    if (e.kind === 'semantic') return renderSemanticEdge(el, e);
     const verb = EDGE_VERBS[e.kind];
     const raw = e.raw
       .slice(0, 100)
@@ -2888,8 +2979,9 @@
     } else if (eg && S.layout) {
       const e = findEdge(eg.dataset.edge);
       if (e) {
-        const verb = EDGE_VERBS[e.kind];
-        html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${verb} <b>${esc(S.nodes.get(e.t).name)}</b>${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
+        const verb = edgeVerb(e);
+        const ai = e.kind === 'semantic' && e.raw[0] ? `<div class="muted">AI-inferred, ${Math.round(e.raw[0].confidence * 100)}% confident${e.raw[0].reason ? ': ' + esc(e.raw[0].reason) : ''}</div>` : '';
+        html = `<b>${esc(S.nodes.get(e.s).name)}</b> ${esc(verb)} <b>${esc(S.nodes.get(e.t).name)}</b>${ai}${e.raw.length > 1 ? `<div class="muted">${e.raw.length} relationships combined (${e.count} occurrences)</div>` : e.count > 1 ? `<div class="muted">${e.count} occurrences</div>` : ''}${e.uncertain ? '<div class="muted">uncertain target</div>' : ''}${e.status ? `<div class="pill sm st-${e.status}">${e.status}</div>` : ''}`;
       }
     }
     if (!html) return hideTooltip();
@@ -3052,6 +3144,10 @@
         break;
       case 'impactResult':
         onImpact(m);
+        break;
+      case 'semanticBuilding':
+        S.semanticBusy = !!m.busy;
+        if (!S.selected && !S.selectedEdge) renderDetails();
         break;
       case 'impactAIResult':
       case 'impactCheckResult': {

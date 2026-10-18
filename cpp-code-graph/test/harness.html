@@ -80,9 +80,19 @@
       if (m.type === 'ready') {
         const diff = location.search.includes('diff');
         const f = window.__FIXTURES;
+        // ?semantic starts with the AI layer built.
+        const graph = new URLSearchParams(location.search).has('semantic') ? withLayer(f.graph) : f.graph;
         setTimeout(() => window.postMessage(diff
           ? { type: 'graph', mode: 'diff', graph: f.diff, title: 'sample: abc123 → working tree', compare: { baseLabel: 'abc123', targetLabel: 'working tree' } }
-          : { type: 'graph', mode: 'workspace', graph: f.graph, title: 'sample' }, '*'), 10);
+          : { type: 'graph', mode: 'workspace', graph, title: 'sample' }, '*'), 10);
+      }
+      // Building the AI layer: busy, then the graph with the layer, like the extension.
+      if (m.type === 'buildSemantic') {
+        window.postMessage({ type: 'semanticBuilding', busy: true }, '*');
+        setTimeout(() => {
+          window.postMessage({ type: 'semanticBuilding', busy: false }, '*');
+          window.postMessage({ type: 'graph', mode: 'workspace', graph: withLayer(window.__FIXTURES.graph), title: 'sample' }, '*');
+        }, 150);
       }
     },
     getState() { return null; },
@@ -122,6 +132,26 @@
     };
     const f = window.__FIXTURES;
     return Object.keys(f.sources).sort().map(p => ({ path: p, text: edits[p] ? f.sources[p].replace(edits[p][0], edits[p][1]) : f.sources[p] }));
+  }
+
+  /** The sample graph with a canned AI layer: concepts by area, and two inferred links with evidence. */
+  function withLayer(graph) {
+    const by = (key, v) => (graph.nodes.find(n => n[key] === v) || {}).id;
+    const concepts = {};
+    for (const n of graph.nodes) {
+      if (!['function', 'method', 'class', 'struct', 'enum'].includes(n.kind)) continue;
+      const file = n.defFile || n.file;
+      concepts[n.id] = file.startsWith('c/') ? ['logging'] : /Canvas/.test(n.qname || '') ? ['rendering'] : n.name === 'main' || n.name === 'addDefaults' ? ['app startup'] : ['geometry', 'shapes'];
+    }
+    const edge = (s, t, evidence, reason, hint) => ({
+      s, t, kind: 'semantic', relation: 'alternative', label: 'alternative implementation of', symmetric: true, confidence: 0.86, reason, evidence, hint,
+      provenance: { model: 'Harness', time: Date.now() - 2 * 3600 * 1000 }
+    });
+    const edges = [
+      edge(by('qname', 'geo::Circle::area'), by('qname', 'geo::Rectangle::area'), { file: 'src/shape.cpp', line: 17, quote: 'double Circle::area() const {' }, 'both compute the area of a shape', 'both override geo::Shape::area'),
+      edge(by('qname', 'geo::Circle'), by('qname', 'geo::Rectangle'), null, 'two kinds of shape', 'both derive from geo::Shape')
+    ];
+    return { ...graph, edges: graph.edges.concat(edges), concepts, semantic: { model: 'Harness', time: Date.now() - 2 * 3600 * 1000, edges: 2, concepts: 5, tagged: Object.keys(concepts).length } };
   }
 
   window.__history = [];

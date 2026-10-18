@@ -475,6 +475,52 @@ async function main() {
     await evaluate("document.querySelector('[data-change=\"behavior\"]').click(); true");
     assert.deepStrictEqual(JSON.parse(await evaluate('JSON.stringify([cg.S.impact.ai, cg.S.impact.check])')), [null, null]);
 
+    // 19. The AI layer: concepts to explore, and AI-inferred links that are off until turned on.
+    await open('?semantic');
+    const intro = JSON.parse(await evaluate(`JSON.stringify({
+      pills: [...document.querySelectorAll('#tab-details .concepts a.concept')].map(a => a.textContent.replace(/\\s+/g, ' ').trim()),
+      status: [...document.querySelectorAll('#tab-details .intro p.muted')].pop().textContent,
+      button: document.getElementById('semBuild').textContent
+    })`));
+    assert.deepStrictEqual(intro.pills, ['geometry 15', 'shapes 15', 'logging 6', 'rendering 5', 'app startup 2']);
+    assert.match(intro.status, /AI layer: 5 concepts on 28 elements, 2 inferred links .* by Harness, 2h ago\./);
+    assert.strictEqual(intro.button, 'Update AI layer');
+    await evaluate("[...document.querySelectorAll('#tab-details a.concept')].find(a => a.dataset.concept === 'logging').click(); true");
+    assert.strictEqual(await evaluate('cg.S.highlight.label'), 'Concept: logging (6)');
+    assert.ok(await evaluate("[...cg.S.highlight.ids].every(id => cg.S.concepts[id].includes('logging'))"));
+    // Off by default; the filter turns it on.
+    assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), false);
+    await evaluate(`cg.S.highlight = null; cg.reveal(cg.S.graph.nodes.find(n => n.qname === 'geo::Circle::area').id, { center: false }); true`);
+    assert.strictEqual(await evaluate("document.querySelectorAll('#layerEdges .edge.ek-semantic').length"), 0);
+    await evaluate("document.querySelector('#filtersBtn').click(); document.querySelector('[data-edge-kind=\"semantic\"]').click(); document.querySelector('#filtersBtn').click(); true");
+    assert.strictEqual(await evaluate('cg.S.edgeOn.semantic'), true);
+    assert.ok(await evaluate("document.querySelectorAll('#layerEdges .edge.ek-semantic').length >= 1"), 'inferred link drawn');
+    // The details panel: concepts and the inferred link with confidence, reason and evidence.
+    const det = JSON.parse(await evaluate(`JSON.stringify({
+      concepts: [...document.querySelectorAll('#tab-details .dhead ~ .concepts a.concept')].map(a => a.textContent),
+      sum: document.querySelector('details.semrel summary').textContent.replace(/\\s+/g, ' ').trim(),
+      item: document.querySelector('details.semrel li').textContent.replace(/\\s+/g, ' ').trim()
+    })`));
+    assert.deepStrictEqual(det.concepts, ['geometry', 'shapes']);
+    assert.strictEqual(det.sum, 'AI-inferred links 1');
+    assert.match(det.item, /^alternative implementation of .*Rectangle::area 86% shape\.cpp:17 ?both compute the area of a shape$/);
+    await evaluate("window.__sent.length = 0; document.querySelector('details.semrel a.site').click(); true");
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'open'))")), ['file', 'line']), { file: 'src/shape.cpp', line: 17 });
+    // The edge itself explains where it came from.
+    await evaluate("click(document.querySelector('#layerEdges .edge.ek-semantic')); true");
+    assert(await evaluate("waitFor(() => /Inferred by the AI/.test(document.getElementById('tab-details').textContent))"), 'edge details shown');
+    const edgeText = await evaluate("document.getElementById('tab-details').textContent.replace(/\\s+/g, ' ')");
+    assert.match(edgeText, /alternative implementation of/);
+    assert.match(edgeText, /Inferred by the AI \(Harness\), 2h ago/);
+    assert.match(edgeText, /Looked at because both (override geo::Shape::area|derive from geo::Shape)\./);
+    // Building it from scratch.
+    await open('');
+    assert.strictEqual(await evaluate("document.getElementById('semBuild').textContent"), 'Build AI layer');
+    await evaluate("window.__sent.length = 0; document.getElementById('semBuild').click(); true");
+    assert.ok(await evaluate("window.__sent.some(m => m.type === 'buildSemantic')"));
+    assert(await evaluate("waitFor(() => document.getElementById('semBuild') && document.getElementById('semBuild').disabled)"), 'busy while building');
+    assert(await evaluate("waitFor(() => cg.S.semantic && document.querySelectorAll('#tab-details .concepts a.concept').length === 5)"), 'concepts after building');
+
     console.log('ui: ok');
     ws.close();
   } finally {

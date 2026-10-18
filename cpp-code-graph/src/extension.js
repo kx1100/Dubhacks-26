@@ -13,6 +13,7 @@ const { GraphTools } = require('./ai/graphTools');
 const { contentKey, summarize } = require('./ai/summaries');
 const { predictImpact, checkPrediction, RELATION_LABELS, CHANGE_TYPES } = require('./ai/impact');
 const { checkWithModel } = require('./ai/impactCheck');
+const { buildSemanticLayer, currentLayer } = require('./ai/semantic');
 
 const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
@@ -22,6 +23,7 @@ const HISTORY_MAX = 30; // answers kept per workspace
 const HISTORY_STEP_NODES = 40; // node ids kept per investigation step
 const SUMMARY_KEY = 'codeGraph.aiSummaries';
 const SUMMARY_MAX = 400; // node summaries kept per workspace
+const SEMANTIC_KEY = 'codeGraph.semanticLayer';
 
 /** The single Code Graph webview panel. */
 class GraphPanel {
@@ -77,7 +79,7 @@ class GraphPanel {
     if (!silent) this.post({ type: 'status', text: 'Scanning C/C++ files…', busy: true });
     const graph = await this.index.scan();
     if (this.compare) return; // the user switched to a comparison meanwhile
-    this.post({ type: 'graph', mode: 'workspace', graph, title: graph.title });
+    this.post({ type: 'graph', mode: 'workspace', graph: this.withSemantic(graph), title: graph.title });
     if (graph.stats.truncated) {
       this.post({ type: 'status', text: `Only the first ${graph.stats.maxFiles} files were analyzed (codeGraph.maxFiles).` });
     }
@@ -89,7 +91,7 @@ class GraphPanel {
         this.ready = true;
         for (const p of this.pending.splice(0)) this.panel.webview.postMessage(p);
         if (this.compare) this.post({ type: 'graph', mode: 'diff', graph: this.compare.graph, title: this.compare.title });
-        else if (this.index.graph) this.post({ type: 'graph', mode: 'workspace', graph: this.index.graph, title: this.index.graph.title });
+        else if (this.index.graph) this.post({ type: 'graph', mode: 'workspace', graph: this.withSemantic(this.index.graph), title: this.index.graph.title });
         else await this.refreshWorkspace();
         this.postHistory();
         break;
@@ -124,6 +126,9 @@ class GraphPanel {
         break;
       case 'impactAI':
         await this.impactAI(m);
+        break;
+      case 'buildSemantic':
+        await this.buildSemantic();
         break;
       case 'impactCheck':
         await this.impactCheck(m);
@@ -259,7 +264,7 @@ class GraphPanel {
     question = (question || '').trim();
     if (!question) return;
     this.show();
-    const graph = this.compare ? this.compare.graph : this.index.graph || (await this.index.scan());
+    const graph = this.compare ? this.compare.graph : this.withSemantic(this.index.graph || (await this.index.scan()));
     if (this.aiCancel) this.aiCancel.cancel();
     const cts = new vscode.CancellationTokenSource();
     this.aiCancel = cts;
@@ -309,6 +314,66 @@ class GraphPanel {
     let tools = this.toolsByGraph.get(graph);
     if (!tools) this.toolsByGraph.set(graph, (tools = new GraphTools(graph, { readSource: file => this.readTarget(file) })));
     return tools;
+  }
+
+  // ---- Semantic layer (AI concepts and inferred relationships) -----------------------
+
+  /**
+   * The workspace graph plus the saved semantic layer, keeping only the parts
+   * whose code has not changed since they were built. The graph itself is not
+   * modified: impact and summaries work on the code's own relationships.
+   */
+  withSemantic(graph) {
+    const state = this.context.workspaceState && this.context.workspaceState.get(SEMANTIC_KEY);
+    if (!state || !graph || graph !== this.index.graph) return graph;
+    const layer = currentLayer(this.graphTools(), state);
+    return {
+      ...graph,
+      edges: graph.edges.concat(layer.edges),
+      concepts: layer.concepts,
+      semantic: { model: state.model, time: state.time, edges: layer.edges.length, concepts: new Set(Object.values(layer.concepts).flat()).size, tagged: Object.keys(layer.concepts).length }
+    };
+  }
+
+  /** Builds or updates the semantic layer for the workspace, with a cancellable progress notification. */
+  async buildSemantic() {
+    this.show();
+    if (this.compare) throw new Error('Leave the commit comparison first: the AI layer describes the current code.');
+    if (!this.index.graph) await this.refreshWorkspace();
+    const model = await selectModel();
+    if (!model) throw new Error('No language model is available in VS Code (for example GitHub Copilot Chat).');
+    const tools = this.graphTools();
+    const state = this.context.workspaceState;
+    const prev = state && state.get(SEMANTIC_KEY);
+    const name = model.name || model.family;
+    this.post({ type: 'semanticBuilding', busy: true });
+    let result;
+    try {
+      result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Code Graph: building the AI layer', cancellable: true }, async (progress, token) => {
+        let reported = 0;
+        return buildSemanticLayer(tools, prev, prompt => streamText(model, prompt, token, () => {}), {
+          model: name,
+          isCancelled: () => token.isCancellationRequested,
+          onProgress: (message, done, total) => {
+            const pct = total ? (100 * done) / total : 100;
+            progress.report({ message, increment: pct - reported });
+            reported = pct;
+          }
+        });
+      });
+    } finally {
+      this.post({ type: 'semanticBuilding', busy: false });
+    }
+    if (state) await state.update(SEMANTIC_KEY, result.state);
+    const graph = this.withSemantic(this.index.graph);
+    this.post({ type: 'graph', mode: 'workspace', graph, title: graph.title });
+    const s = result.stats;
+    const info = graph.semantic || { concepts: 0, edges: 0 };
+    let msg = `Code Graph: the AI layer has ${info.concepts} concept${info.concepts === 1 ? '' : 's'} and ${info.edges} inferred link${info.edges === 1 ? '' : 's'}.`;
+    if (s.error) msg += ` It stopped early (${s.error}); run it again to continue.`;
+    else if (s.cancelled || s.filesLeft) msg += ` ${s.filesLeft} file${s.filesLeft === 1 ? '' : 's'} still to tag; run it again to continue.`;
+    vscode.window.showInformationMessage(msg);
+    return result;
   }
 
   // ---- Change impact ------------------------------------------------------------------
@@ -519,6 +584,7 @@ function activate(context) {
     }),
     vscode.commands.registerCommand('codeGraph.revealInGraph', () => panel.revealAtCursor().catch(err => panel.error(err))),
     vscode.commands.registerCommand('codeGraph.compareCommits', () => panel.pickAndCompare().catch(err => panel.error(err))),
+    vscode.commands.registerCommand('codeGraph.buildSemantic', () => panel.buildSemantic().catch(err => panel.error(err))),
     vscode.commands.registerCommand('codeGraph.ask', async () => {
       const q = await vscode.window.showInputBox({ title: 'Code Graph: ask about the code', placeHolder: 'e.g. What happens when a shape is drawn?' });
       if (q) await panel.ask(q).catch(err => panel.error(err));
