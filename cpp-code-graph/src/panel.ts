@@ -1,5 +1,6 @@
 // src/panel.ts
-// Hosts the webview (media/webview/main.js, bundled to media/dist/graph.js)
+// Hosts the webview (media/main.js and the side panel from media/webview/panels,
+// bundled to media/dist/graph.js)
 // and handles the messages defined in types.ts: source navigation, AI
 // questions and their history, node summaries, change impact and the AI
 // semantic layer.
@@ -460,6 +461,7 @@ export class GraphPanel {
         const js = webview.asWebviewUri(vscode.Uri.joinPath(media, 'dist', 'graph.js'));
         const highlightJs = webview.asWebviewUri(vscode.Uri.joinPath(media, 'highlight.js'));
         const css = webview.asWebviewUri(vscode.Uri.joinPath(media, 'style.css'));
+        const panelCss = webview.asWebviewUri(vscode.Uri.joinPath(media, 'panel.css'));
         const csp = [
             "default-src 'none'",
             `img-src ${webview.cspSource} data:`,
@@ -474,6 +476,7 @@ export class GraphPanel {
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${css}">
+<link rel="stylesheet" href="${panelCss}">
 <title>Code Graph</title>
 </head>
 <body>

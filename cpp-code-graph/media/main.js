@@ -11,15 +11,21 @@
 // - Arrows: "Selected" (only the selected node's), "Bundled" (the default: one
 //   arrow per pair of files with a count, plus exact arrows inside a file and
 //   for the selection) or "All".
-// - Side panel with two tabs: Details (the selected node: what it is, its AI
-//   summary, where it is, what it connects to) and Ask AI (the answer's nodes
-//   are highlighted and its path drawn bold).
+// - Side panel: the previous webview's Details tab (with its "What if I change
+//   this?" view) and Ask AI tab, from media/webview/panels, connected to this
+//   graph through panel-bridge.js. Their highlights (an answer's nodes and
+//   path, a trace, a concept, an impact) are drawn here.
 // - Compare: the graph of two commits, colored by what was added, removed or changed.
 
 import cytoscape from 'cytoscape';
 // highlight.js is loaded by its own <script> tag (src/panel.ts) and sets window.CodeHighlight.
 const { highlightLines } = /** @type {any} */ (window).CodeHighlight;
 import { arrangeChildren, growInPlace, registerLayouts, runLayout, undoMoves } from './layout.js';
+import { connect, renderer, S, setGraph, setHighlight, switchTab, vscode } from './panel-bridge.js';
+import { renderDetails } from './webview/panels/details.js';
+import { onSummary } from './webview/panels/summary.js';
+import { onImpact, requestImpact } from './webview/panels/impact.js';
+import { applyAiHighlight, ask, renderAnswer, renderHistory, renderSuggestions, setVisited } from './webview/panels/ask.js';
 
 registerLayouts(cytoscape);
 
@@ -29,9 +35,6 @@ registerLayouts(cytoscape);
 /** @typedef {import('../src/types').ToWebviewMessage} ToWebviewMessage */
 /** @typedef {import('../src/types').FromWebviewMessage} FromWebviewMessage */
 /** @typedef {'selected' | 'bundled' | 'all'} EdgeMode */
-
-// eslint-disable-next-line no-undef
-const vscode = acquireVsCodeApi();
 
 /** @param {FromWebviewMessage} message */
 const send = (message) => vscode.postMessage(message);
@@ -77,28 +80,6 @@ const KIND_LABEL = {
     namespace: 'Namespace',
 };
 
-/** Details tab: [outgoing, incoming] titles per relationship, in the order shown. Calls come first. */
-const REL_TITLES = {
-    calls: ['Calls', 'Called by'],
-    uses: ['Uses types', 'Used by'],
-    includes: ['Includes', 'Included by'],
-    pairs: ['Implemented in', 'Declared in'],
-    inherits: ['Inherits from', 'Derived classes'],
-    overrides: ['Overrides', 'Overridden by'],
-    semantic: ['AI: related to', 'AI: related from'],
-};
-
-const TABS = { details: 'Details', ai: 'Ask AI' };
-
-/** Starter questions on the Ask AI tab: [label, question, mode]. */
-const SUGGESTIONS = [
-    ['Project overview', 'What does this project do, and how is it organized?', 'ask'],
-    ['Where it starts', 'Where does the program start, and what happens next?', 'path'],
-    ['How classes relate', 'How do the main classes relate to each other?', 'ask'],
-];
-
-const CONFIDENCE_TITLE = { high: 'Backed by code the model read', medium: 'Inferred from the graph structure', low: 'Partly guessed; check the evidence' };
-
 // Code card geometry, in graph (model) pixels.
 const CARD = { header: 26, line: 16, maxLines: 18, char: 7.2, gutter: 52, minW: 240, maxW: 620, pad: 14 };
 
@@ -116,17 +97,7 @@ const state = {
     childCount: new Map(),
     /** @type {Map<string, number>} box id -> number of symbols inside it, all the way down */
     descCount: new Map(),
-    /** @type {Map<string, GraphNode[]>} box id -> what sits directly in it */
-    children: new Map(),
-    /** @type {Map<string, GraphEdge[]>} node id -> edges leaving it */
-    out: new Map(),
-    /** @type {Map<string, GraphEdge[]>} node id -> edges arriving at it */
-    inc: new Map(),
-    side: {
-        open: saved.sideOpen ?? saved.aiOpen ?? true,
-        /** @type {keyof typeof TABS} */
-        tab: saved.tab in TABS ? saved.tab : 'details',
-    },
+    side: { open: saved.sideOpen ?? true },
     /** @type {Set<string>} expanded file ids */
     expanded: new Set(saved.expanded || []),
     /** @type {string | null} */
@@ -139,9 +110,9 @@ const state = {
     code: new Map(),
     /** Node to center on after the next layout */
     focusAfterLayout: /** @type {string | null} */ (null),
-    /** @type {Set<string>} nodes an AI answer highlights */
+    /** @type {Set<string>} nodes the side panel highlights (an AI answer, a trace, a concept, an impact) */
     highlighted: new Set(),
-    /** @type {string[]} the answer's execution path, in order */
+    /** @type {string[]} an AI answer's execution path, in order */
     path: [],
     /** @type {'workspace' | 'diff'} */
     mode: 'workspace',
@@ -150,25 +121,6 @@ const state = {
     /** @type {Map<number, string>} getSource request -> node id */
     sourceReqs: new Map(),
     nextReq: 1,
-    ai: {
-        busy: false,
-        question: '',
-        answer: '',
-        /** @type {Array<{tool: string, summary?: string}>} */
-        steps: [],
-        error: false,
-        model: /** @type {string | null | undefined} */ (undefined),
-        /** @type {any[]} */
-        evidence: [],
-        confidence: /** @type {string | undefined} */ (undefined),
-        confidenceReason: /** @type {string | undefined} */ (undefined),
-        /** @type {any[]} */
-        history: [],
-        /** A selected node the user chose not to send with the question. */
-        contextOff: /** @type {string | null} */ (null),
-    },
-    /** @type {Map<string, {status: 'loading' | 'ready' | 'none', text?: string, tags?: string[], notes?: string[], model?: string, note?: string}>} AI summaries */
-    summaries: new Map(),
     firstGraph: true,
     layoutRun: 0,
 };
@@ -180,7 +132,7 @@ const persist = () =>
         edgeMode: state.edgeMode,
         openCode: [...state.openCode],
         sideOpen: state.side.open,
-        tab: state.side.tab,
+        aiMode: S.aiMode, // the side panel's
     });
 
 // ---------------------------------------------------------------------------
@@ -214,27 +166,21 @@ app.innerHTML = `
   <div id="tooltip" class="tooltip hidden"></div>
 </main>
 <aside id="side" class="side hidden" aria-label="Side panel">
-  <div class="tabs" role="tablist">
-    <button data-tab="details" role="tab">Details</button>
-    <button data-tab="ai" role="tab">Ask AI</button>
-    <span class="spacer"></span>
-    <button id="sideClose" class="card-btn" title="Close the panel">✕</button>
+  <div class="tabs">
+    <button data-tab="details" class="active">Details</button>
+    <button data-tab="ai">Ask AI</button>
+    <button id="sideClose" class="tabclose" title="Close the panel">✕</button>
   </div>
-  <div id="tab-details" class="tabbody details" role="tabpanel"></div>
-  <div id="tab-ai" class="tabbody ask hidden" role="tabpanel">
-    <form id="askForm" class="ask-form">
-      <textarea id="question" rows="3" placeholder="e.g. What happens when a list is freed?  (Enter to ask)"></textarea>
-      <div class="ask-row">
-        <label title="Trace the main execution path through the code"><input type="checkbox" id="pathMode"> Trace path</label>
-        <span id="ctx"></span>
-        <span class="spacer"></span>
-        <button type="button" id="cancelAsk" class="hidden">Stop</button>
-        <button type="submit" id="askBtn">Ask</button>
-      </div>
-    </form>
-    <div id="suggestions" class="suggestions"></div>
+  <div id="tab-details" class="tabbody"></div>
+  <div id="tab-impact" class="tabbody hidden"></div>
+  <div id="tab-ai" class="tabbody hidden">
+    <div class="ask">
+      <textarea id="question" rows="2" placeholder="Ask about the code…  (Ctrl+Enter)"></textarea>
+      <div class="aiopts" id="aiOpts"></div>
+      <div id="suggestions" class="suggestions"></div>
+    </div>
+    <div id="history" class="histpop hidden"></div>
     <div id="answer" class="answer"></div>
-    <div class="history"><select id="history" title="Earlier answers"></select><button id="historyClear" class="card-btn" title="Clear the history">Clear</button></div>
   </div>
 </aside>
 </div>`;
@@ -528,7 +474,7 @@ function innerLinks(/** @type {string} */ boxId) {
 
 /** True if raw edge `e` is one of the selected node's own arrows, or links two nodes of an AI answer. */
 function touchesSelection(/** @type {GraphEdge} */ e) {
-    if (!state.selected && state.highlighted.has(e.s) && state.highlighted.has(e.t)) return true;
+    if (state.highlighted.has(e.s) && state.highlighted.has(e.t)) return true;
     const sel = state.selected;
     if (!sel) return false;
     if (e.s === sel || e.t === sel) return true;
@@ -956,13 +902,15 @@ function receiveCode(m) {
 // ---------------------------------------------------------------------------
 
 /**
- * Highlight the selected node and everything connected to it, or the nodes of
- * an AI answer and the edges between them (its path drawn bold), and dim the rest.
+ * Highlight the side panel's nodes (shown by whatever stands in for them) and
+ * the edges between them, with an answer's path drawn bold; or else the
+ * selected node and everything connected to it. Dim the rest.
  */
 function applyHighlight() {
     cy.elements().removeClass('faded hl chosen onpath');
-    if (!state.selected && state.highlighted.size) {
-        const marked = cy.nodes().filter((n) => state.highlighted.has(n.id()));
+    if (state.highlighted.size) {
+        const reps = new Set([...state.highlighted].map(representative));
+        const marked = cy.nodes().filter((n) => reps.has(n.id()));
         const keep = marked.union(marked.ancestors()).union(marked.edgesWith(marked));
         cy.elements().not(keep).addClass('faded');
         keep.edges().addClass('hl');
@@ -973,6 +921,7 @@ function applyHighlight() {
             const b = representative(state.path[i + 1]);
             if (a && b && a !== b) cy.$id(a).edgesTo(cy.$id(b)).removeClass('faded').addClass('onpath');
         }
+        if (state.selected) cy.$id(state.selected).addClass('chosen');
     } else {
         const el = state.selected ? cy.$id(state.selected) : cy.collection();
         if (el.nonempty()) {
@@ -991,10 +940,7 @@ function applyHighlight() {
 function select(/** @type {string | null} */ id) {
     const changed = state.selected !== id;
     state.selected = id;
-    if (id === null) {
-        state.highlighted.clear();
-        state.path = [];
-    }
+    if (id === null) clearPanelHighlight();
     persist();
     renderSelection();
     // The selection's own arrows are drawn exactly in every mode.
@@ -1082,6 +1028,7 @@ let tapTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefin
 cy.on('tap', 'node', (evt) => {
     const id = evt.target.id();
     select(id);
+    switchTab('details', true);
     clearTimeout(tapTimer);
     tapTimer = setTimeout(() => {
         if (isBox(id)) toggle(id);
@@ -1107,8 +1054,8 @@ const STATUS_LABEL = { added: 'Added in the newer version', removed: 'Removed in
 function nodeTooltip(/** @type {GraphNode} */ n) {
     const where = n.line ? `${n.file}:${n.line}` : n.file;
     const status = n.status ? `<div class="muted">${esc(STATUS_LABEL[n.status])}</div>` : '';
-    const summary = state.summaries.get(n.id);
-    const about = summary?.status === 'ready' ? `<div>${esc(summary.text)}</div>` : '';
+    const summary = S.summaries.get(n.id);
+    const about = summary?.status === 'ready' && summary.summary ? `<div>${esc(summary.summary.purpose)}</div>` : '';
     if (n.kind === 'file') {
         const kids = state.childCount.get(n.id) || 0;
         const role = n.header ? 'Header file: declares what other files can use' : 'Source file: contains the code';
@@ -1254,528 +1201,106 @@ $('collapseAll').onclick = () => {
 $('refresh').onclick = () => send({ type: 'refresh' });
 $('compare').onclick = () => send({ type: 'compare' });
 $('exitCompare').onclick = () => send({ type: 'exitCompare' });
-$('sideToggle').onclick = () => setSide(!state.side.open);
-$('sideClose').onclick = () => setSide(false);
-for (const b of /** @type {NodeListOf<HTMLButtonElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) {
-    b.onclick = () => setSide(true, /** @type {keyof typeof TABS} */ (b.dataset.tab));
-}
 document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && state.openCode.size) {
+    // Escape closes the code cards first, then clears the side panel's highlight.
+    if (ev.key !== 'Escape') return;
+    if (state.openCode.size) {
         const ids = [...state.openCode];
         state.openCode.clear();
         persist();
         animated(() => ids.forEach(sizeForCode));
-    }
+    } else clearPanelHighlight();
 });
 
 // ---------------------------------------------------------------------------
-// Side panel: Details and Ask AI tabs
+// Side panel: the previous webview's Details tab (with its impact view) and
+// Ask AI tab, from media/webview/panels, connected through panel-bridge.js
 // ---------------------------------------------------------------------------
 
-/** Show or hide the side panel, optionally on a given tab. */
-function setSide(/** @type {boolean} */ open, /** @type {keyof typeof TABS | undefined} */ tab) {
-    const wasOpen = state.side.open;
+/** Show or hide the side panel. */
+function setSide(/** @type {boolean} */ open) {
     state.side.open = open;
-    if (tab) state.side.tab = tab;
     $('side').classList.toggle('hidden', !open);
     $('sideToggle').classList.toggle('on', open);
-    for (const b of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) {
-        const on = b.dataset.tab === state.side.tab;
-        b.classList.toggle('active', on);
-        b.setAttribute('aria-selected', String(on));
-    }
-    for (const t of Object.keys(TABS)) $(`tab-${t}`).classList.toggle('hidden', t !== state.side.tab);
     persist();
-    if (wasOpen !== open) {
-        cy.resize();
-        placeCards();
-    }
-    if (open) {
-        renderSelection();
-        if (state.side.tab === 'ai') /** @type {HTMLTextAreaElement} */ ($('question')).focus();
-    }
+    cy.resize();
+    placeCards();
+    if (open) renderDetails();
 }
 
-/** Send a question (from the form, a suggestion or a Details button) and show the Ask AI tab. */
-function ask(/** @type {string} */ question, /** @type {'ask' | 'path'} */ mode, /** @type {string | undefined} */ focus) {
-    question = question.trim();
-    if (!question) return;
-    /** @type {HTMLTextAreaElement} */ ($('question')).value = question;
-    /** @type {HTMLInputElement} */ ($('pathMode')).checked = mode === 'path';
-    if (!state.side.open || state.side.tab !== 'ai') setSide(true, 'ai');
-    send({ type: 'ask', question, focus, mode });
+/** Show a tab of the side panel (opening it); the impact view belongs to the Details tab. */
+function showTab(/** @type {string} */ tab) {
+    if (!state.side.open) setSide(true);
+    const button = tab === 'impact' ? 'details' : tab;
+    for (const b of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) b.classList.toggle('active', b.dataset.tab === button);
+    for (const t of ['details', 'ai', 'impact']) $(`tab-${t}`).classList.toggle('hidden', t !== tab);
 }
 
-/** The selected node, when it goes with the next question as context. */
-function contextNode() {
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    return n && state.ai.contextOff !== n.id ? n : undefined;
-}
-
-/** The chip under the question box that sends the selected node along (click to leave it out). */
-function renderContext() {
-    const el = $('ctx');
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    if (!n) {
-        el.innerHTML = '';
-        return;
-    }
-    const on = state.ai.contextOff !== n.id;
-    const title = on ? `${n.qname || n.name} goes with the question as context. Click to leave it out.` : `Click to send ${n.qname || n.name} with the question`;
-    el.innerHTML = `<button type="button" class="ctx${on ? ' on' : ''}" title="${esc(title)}"><span class="dot k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span>${esc(shortName(n))}${on ? ' ✕' : ''}</button>`;
-    /** @type {HTMLElement} */ (el.firstElementChild).onclick = () => {
-        state.ai.contextOff = on ? n.id : null;
-        renderContext();
-    };
-}
-
-/** Starter questions, shown while nothing has been asked. */
-function renderSuggestions() {
-    const el = $('suggestions');
-    const list = SUGGESTIONS.slice();
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    if (n) list.push([`Explain ${shortName(n)}`, explainQuestion(n), 'ask']);
-    el.innerHTML = `<span class="muted">Try</span>${list.map(([label, q], i) => `<a class="sugg" data-sugg="${i}" title="${esc(q)}">${esc(label)}</a>`).join('')}`;
-    for (const a of /** @type {NodeListOf<HTMLElement>} */ (el.querySelectorAll('[data-sugg]'))) {
-        const [, q, mode] = list[Number(a.dataset.sugg)];
-        a.onclick = () => ask(q, /** @type {'ask' | 'path'} */ (mode), contextNode()?.id);
-    }
-    el.classList.toggle('hidden', !!state.ai.question);
-}
-
-const explainQuestion = (/** @type {GraphNode} */ n) =>
-    `Explain ${KIND_LABEL[n.kind]?.toLowerCase() || n.kind} ${n.qname || n.name}: what is it responsible for, and how does it interact with the rest of the code?`;
-
-/** A name to show for a node: `Class::method` for methods, the plain name otherwise. */
-function shortName(/** @type {GraphNode} */ n) {
-    return n.kind === 'method' && n.qname ? n.qname.split('::').slice(-2).join('::') : n.name;
-}
-
-/**
- * A little Markdown for answers: code blocks, `code`, **bold**, bullet lists,
- * paragraphs, and [[node id]] references as links that focus the node.
- */
-function mdLite(/** @type {string} */ text) {
-    const blocks = String(text || '').split(/```[a-z]*\n?/);
-    return blocks
-        .map((block, i) => {
-            if (i % 2) return `<pre><code>${esc(block.replace(/\n$/, ''))}</code></pre>`;
-            const inline = (/** @type {string} */ s) =>
-                esc(s)
-                    .replace(/\[\[([^\]]+)\]\]/g, (_, id) => {
-                        const n = state.byId.get(id.replace(/&amp;/g, '&'));
-                        return `<a class="node-ref" data-node="${id}">${esc(n ? shortName(n) : id)}</a>`;
-                    })
-                    .replace(/`([^`]+)`/g, '<code>$1</code>')
-                    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
-            return block
-                .split(/\n{2,}/)
-                .filter((p) => p.trim())
-                .map((p) => {
-                    const lines = p.split('\n');
-                    if (lines.every((l) => /^\s*[-*] /.test(l))) return `<ul>${lines.map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ''))}</li>`).join('')}</ul>`;
-                    return `<p>${lines.map(inline).join('<br>')}</p>`;
-                })
-                .join('');
-        })
-        .join('');
-}
-
-function renderAnswer() {
-    const ai = state.ai;
-    const el = $('answer');
-    el.classList.toggle('error', ai.error);
-    $('askBtn').classList.toggle('hidden', ai.busy);
-    $('cancelAsk').classList.toggle('hidden', !ai.busy);
-    renderSuggestions();
-    if (!ai.question) {
-        el.innerHTML = '<div class="muted">Ask how the code works, e.g. "Where is the list freed?". The nodes in the answer light up in the graph; click a name to go to it.</div>';
-        return;
-    }
-    const stepList = `<ul class="steps">${ai.steps.map((s) => `<li>${esc(s.summary || s.tool)}</li>`).join('')}</ul>`;
-    // While it works the steps show as they come; afterwards they fold away.
-    const steps = !ai.steps.length ? '' : ai.busy ? stepList : `<details class="fold"><summary>${ai.steps.length} investigation step${ai.steps.length === 1 ? '' : 's'}</summary>${stepList}</details>`;
-    const busy = ai.busy && !ai.answer ? `<div class="muted">${ai.steps.length ? 'Investigating…' : 'Thinking…'}</div>` : '';
-    const evidence = (ai.evidence || []).filter((e) => e.file || e.nodeId);
-    const sources = !ai.busy && evidence.length
-        ? `<details class="fold"><summary>${evidence.length} source${evidence.length === 1 ? '' : 's'}</summary><ul class="evidence">${evidence
-              .map((e) => {
-                  const node = e.nodeId && state.byId.get(e.nodeId);
-                  const where = e.file ? `<a class="loc" data-open-file="${esc(e.file)}" data-open-line="${e.line || 1}">${esc(e.file.split('/').pop() + (e.line ? `:${e.line}` : ''))}</a>` : '';
-                  return `<li>${e.claim ? `${esc(e.claim)} ` : ''}${node ? `${chip(node.id)} ` : ''}${where}</li>`;
-              })
-              .join('')}</ul></details>`
-        : '';
-    const conf = !ai.busy && ai.confidence
-        ? `<div class="muted"><span class="conf conf-${esc(ai.confidence)}">${esc(ai.confidence[0].toUpperCase() + ai.confidence.slice(1))} confidence.</span> ${esc(ai.confidenceReason || CONFIDENCE_TITLE[ai.confidence] || '')}</div>`
-        : '';
-    const model = !ai.busy && ai.model ? `<div class="muted">Answered by ${esc(ai.model)}</div>` : '';
-    el.innerHTML = `<div class="q">${esc(ai.question)}</div>${steps}${busy}<div class="text">${mdLite(ai.answer)}</div>${sources}${conf}${model}`;
-}
-
-function renderHistory() {
-    const sel = /** @type {HTMLSelectElement} */ ($('history'));
-    const entries = state.ai.history;
-    sel.innerHTML =
-        `<option value="">${entries.length ? `Earlier answers (${entries.length})` : 'No earlier answers'}</option>` +
-        entries.map((e) => `<option value="${esc(e.id)}">${esc(e.question)}</option>`).join('');
-    sel.disabled = !entries.length;
-    $('historyClear').classList.toggle('hidden', !entries.length);
-}
-
-/** Bring the side panel up to date with the selection: the Details tab and the question's context. */
+/** The Details tab follows the selection. */
 function renderSelection() {
-    renderContext();
-    if (!state.ai.question) renderSuggestions();
-    if (state.side.open && state.side.tab === 'details') renderDetails();
+    renderDetails();
 }
 
-/** A link to a node: click goes to it in the graph, Ctrl+click opens its source. */
-function chip(/** @type {string} */ id, extra = '') {
-    const n = state.byId.get(id);
-    if (!n) return `<span class="chip missing">${esc(id)}</span>`;
-    const status = n.status ? ` st-${n.status}` : '';
-    return `<a class="chip${status}" data-node="${esc(id)}" title="${esc(`${n.qname || n.file} · Ctrl+click to open the source`)}"><span class="dot k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span>${esc(shortName(n))}${extra}</a>`;
+/** Mark a highlight from the panel (an answer, a trace, a concept, an impact) on the graph as it is, or clear it. */
+function showHighlight(/** @type {{ids: Set<string>, path: string[]} | null} */ h) {
+    state.highlighted = new Set(h ? [...h.ids].filter((id) => state.byId.has(id)) : []);
+    state.path = h ? h.path.filter((id) => state.byId.has(id)) : [];
+    refreshEdges();
 }
 
-const plural = (/** @type {number} */ k, /** @type {string} */ word, many = `${word}s`) => `${k} ${k === 1 ? word : many}`;
-
-/** A plain-language description from the graph, shown until (or instead of) the AI summary. */
-function describeNode(/** @type {GraphNode} */ n) {
-    const out = state.out.get(n.id) || [];
-    const inc = state.inc.get(n.id) || [];
-    const kids = state.children.get(n.id) || [];
-    const distinct = (/** @type {GraphEdge[]} */ list, /** @type {string} */ kind, /** @type {'s' | 't'} */ end) => new Set(list.filter((e) => e.kind === kind).map((e) => e[end])).size;
-    const count = (/** @type {string} */ kind) => kids.filter((c) => c.kind === kind).length;
-    const parent = n.parent !== undefined ? state.byId.get(n.parent) : undefined;
-    switch (n.kind) {
-        case 'file': {
-            let s = `${n.header ? 'A header file' : 'A source file'} with ${plural(kids.length, 'top-level item')}`;
-            if (n.header) s += `, included by ${plural(distinct(inc, 'includes', 's'), 'file')}`;
-            return `${s}.`;
-        }
-        case 'class':
-        case 'struct': {
-            let s = `A ${n.kind} with ${plural(count('method'), 'method')} and ${plural(count('field'), 'field')}.`;
-            const bases = distinct(out, 'inherits', 't');
-            const derived = distinct(inc, 'inherits', 's');
-            if (bases) s += ` It derives from ${plural(bases, 'base class', 'base classes')}.`;
-            if (derived) s += ` ${plural(derived, 'class derives', 'classes derive')} from it.`;
-            return s;
-        }
-        case 'function':
-        case 'method': {
-            let s =
-                n.kind === 'method'
-                    ? `A ${n.isPure ? 'pure virtual ' : n.isVirtual ? 'virtual ' : n.isStatic ? 'static ' : ''}member function of ${esc(parent?.name || '?')}.`
-                    : `A ${n.isStatic ? 'file-local (static) ' : ''}function.`;
-            if (n.name === 'main') s += ' This is the program entry point.';
-            s += ` It calls ${plural(distinct(out, 'calls', 't'), 'known function')} and is called from ${plural(distinct(inc, 'calls', 's'), 'place')} in this codebase.`;
-            if (!n.defFile && !n.isPure) s += ' No definition was found in the workspace (a library API, or defined elsewhere).';
-            return s;
-        }
-        case 'enum':
-            return 'An enumeration.';
-        case 'typedef':
-            return 'A type alias (typedef).';
-        case 'field':
-            return `A data member of ${esc(parent?.name || '?')}.`;
-        case 'namespace':
-            return `A namespace block containing ${plural(kids.length, 'item')}.`;
-    }
-    return '';
+/** Open the boxes around a highlight's nodes and lay the graph out again to show it. */
+function revealHighlight(/** @type {string[]} */ ids, /** @type {string[]} */ path) {
+    state.highlighted = new Set([...ids, ...path].filter((id) => state.byId.has(id)));
+    state.path = path.filter((id) => state.byId.has(id));
+    for (const id of state.highlighted) for (const box of boxesAround(id)) state.expanded.add(box);
+    persist();
+    render({ fit: true });
 }
 
-/** One fold of related nodes, merged by the node at the other end. */
-function relationSection(/** @type {string} */ title, /** @type {GraphEdge[]} */ edges, /** @type {'s' | 't'} */ end, closed = false) {
-    if (!edges.length) return '';
-    /** @type {Map<string, {n: number, uncertain: boolean, site?: {file: string, line: number}, label?: string, status?: string}>} */
-    const seen = new Map();
-    for (const e of /** @type {any[]} */ (edges)) {
-        const other = e[end];
-        const cur = seen.get(other);
-        if (cur) {
-            cur.n += e.n || 1;
-            cur.uncertain = cur.uncertain && !!e.uncertain;
-        } else seen.set(other, { n: e.n || 1, uncertain: !!e.uncertain, site: e.sites?.[0], label: e.label || e.relation, status: e.status });
-    }
-    const name = (/** @type {string} */ id) => state.byId.get(id)?.name || id;
-    const items = [...seen].sort((a, b) => name(a[0]).localeCompare(name(b[0])));
-    const shown = items.slice(0, 80);
-    const rows = shown
-        .map(([other, info]) => {
-            const extra = (info.n > 1 ? ` <span class="muted">×${info.n}</span>` : '') + (info.uncertain ? ' <span class="muted" title="Matched by name only: a best guess">?</span>' : '');
-            const label = info.label ? ` <span class="muted">${esc(info.label)}</span>` : '';
-            const st = info.status ? ` <span class="pill st-${esc(info.status)}">${esc(info.status)}</span>` : '';
-            const site = info.site ? ` <a class="site" data-open-file="${esc(info.site.file)}" data-open-line="${info.site.line}" title="Go to ${esc(`${info.site.file}:${info.site.line}`)}">↗</a>` : '';
-            return `<li>${chip(other, extra)}${label}${st}${site}</li>`;
-        })
-        .join('');
-    const more = items.length > shown.length ? `<li class="muted">… and ${items.length - shown.length} more</li>` : '';
-    return `<details${closed ? '' : ' open'}><summary>${esc(title)} <span class="muted">${items.length}</span></summary><ul class="rel">${rows}${more}</ul></details>`;
+/** Clear the panel's highlight, e.g. when the background is clicked. */
+function clearPanelHighlight() {
+    if (S.highlight || state.highlighted.size) setHighlight(null);
 }
 
-/** For a file or class: which other files the code inside it depends on, and which depend on it. */
-function dependencySections(/** @type {string} */ id) {
-    const file = (/** @type {string} */ x) => fileOf(x);
-    const inside = (/** @type {string} */ x) => x === id || boxesAround(x).includes(id);
-    /** @type {Map<string, number>} */ const outFiles = new Map();
-    /** @type {Map<string, number>} */ const inFiles = new Map();
-    for (const e of state.data?.edges ?? []) {
-        if (FILE_EDGES.has(e.kind)) continue;
-        const a = inside(e.s);
-        const b = inside(e.t);
-        if (a === b) continue;
-        const [map, other] = a ? [outFiles, file(e.t)] : [inFiles, file(e.s)];
-        if (other !== id) map.set(other, (map.get(other) || 0) + (e.n || 1));
-    }
-    const list = (/** @type {Map<string, number>} */ m, /** @type {string} */ title) =>
-        m.size
-            ? `<details><summary>${title} <span class="muted">${m.size}</span></summary><ul class="rel">${[...m]
-                  .sort((a, b) => b[1] - a[1])
-                  .slice(0, 60)
-                  .map(([f, c]) => `<li>${chip(f, ` <span class="muted">×${c}</span>`)}</li>`)
-                  .join('')}</ul></details>`
-            : '';
-    return list(outFiles, 'Depends on files') + list(inFiles, 'Files that depend on this');
-}
-
-/** Concepts the AI layer tagged a node with; click one to highlight everything tagged with it. */
-function conceptPills(/** @type {string} */ id) {
-    const tags = state.data?.concepts?.[id];
-    if (!tags?.length) return '';
-    return `<div class="concepts"><span class="aibadge" title="Concepts tagged by the AI">AI</span>${tags.map((t) => `<a class="concept" data-concept="${esc(t)}">${esc(t)}</a>`).join('')}</div>`;
-}
-
-/** The start page: how to use the graph, good places to start, and the concepts the AI tagged. */
-function introHtml() {
-    const nodes = state.data?.nodes ?? [];
-    const mains = nodes.filter((n) => n.name === 'main' && n.kind === 'function');
-    const degree = (/** @type {GraphNode} */ n) => (state.out.get(n.id)?.length || 0) + (state.inc.get(n.id)?.length || 0);
-    const classes = nodes
-        .filter((n) => n.kind === 'class' || n.kind === 'struct')
-        .sort((a, b) => degree(b) - degree(a))
-        .slice(0, 8);
-    const start = mains.length || classes.length
-        ? `<h3>Good places to start</h3><ul class="rel">${mains.map((m) => `<li>${chip(m.id, ' <span class="muted">entry point</span>')}</li>`).join('')}${classes.map((c) => `<li>${chip(c.id)}</li>`).join('')}</ul>`
-        : '';
-    /** @type {Map<string, number>} */
-    const counts = new Map();
-    for (const tags of Object.values(state.data?.concepts ?? {})) for (const t of tags) counts.set(t, (counts.get(t) || 0) + 1);
-    const concepts = counts.size
-        ? `<h3>Concepts</h3><div class="concepts">${[...counts]
-              .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-              .slice(0, 40)
-              .map(([t, c]) => `<a class="concept" data-concept="${esc(t)}">${esc(t)} <span class="muted">${c}</span></a>`)
-              .join('')}</div>`
-        : '';
-    return `<div class="intro">
-      <h3>Explore the code</h3>
-      <ul>
-        <li><b>Click</b> a file or class to open it, a function to see its code inline.</li>
-        <li><b>Double-click</b> to jump to the source in the editor.</li>
-        <li>Selecting a node shows what it is and how it connects, here.</li>
-        <li>Choose which arrows to draw under <b>Arrows</b>; scroll to zoom, drag to pan.</li>
-      </ul>
-      ${start}${concepts}
-    </div>`;
-}
-
-/** The AI summary of a node, asked for the first time the node is shown. */
-function summaryHtml(/** @type {GraphNode} */ n) {
-    let s = state.summaries.get(n.id);
-    if (!s && n.status !== 'removed') {
-        s = { status: 'loading' };
-        state.summaries.set(n.id, s);
-        send({ type: 'getSummary', id: n.id });
-    }
-    if (!s) return '';
-    if (s.status === 'loading') return '<div class="aisum muted">Describing…</div>';
-    if (s.status === 'none') return s.note ? `<div class="aisum muted">${esc(s.note)}</div>` : '';
-    const tags = (s.tags || []).map((t) => `<span class="pill">${esc(t)}</span>`).join('');
-    const notes = (s.notes || []).length ? `<ul>${(s.notes || []).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
-    return `<div class="aisum" title="${esc(s.model ? `Summary by ${s.model}` : 'AI summary')}"><span class="aibadge">AI</span><button class="card-btn refresh" data-act="resummarize" title="Describe it again">↻</button><p>${esc(s.text)}</p>${tags ? `<div class="tags">${tags}</div>` : ''}${notes}</div>`;
-}
-
-function renderDetails() {
-    const el = $('tab-details');
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    if (!n) {
-        el.innerHTML = introHtml();
-        return;
-    }
-    const out = state.out.get(n.id) || [];
-    const inc = state.inc.get(n.id) || [];
-    const loc = (/** @type {string} */ label, /** @type {string} */ file, /** @type {number | undefined} */ line) =>
-        `<div class="kv"><span>${label}</span><a class="loc" data-open-file="${esc(file)}" data-open-line="${line || 1}">${esc(`${file}:${line || 1}`)}</a></div>`;
-    let locs = '';
-    if (n.declFile) locs = loc('Declared', n.declFile, n.declLine) + loc('Defined', n.defFile || n.file, n.defLine || n.line);
-    else if (n.defFile && (n.defFile !== n.file || n.defLine !== n.line)) locs = loc('Declared', n.file, n.line) + loc('Defined', n.defFile, n.defLine);
-    else locs = loc(n.kind === 'file' ? 'File' : 'Location', n.file, n.line);
-
-    const kids = state.children.get(n.id) || [];
-    const contains = kids.length
-        ? `<details${kids.length <= 40 ? ' open' : ''}><summary>Contains <span class="muted">${kids.length}</span></summary><ul class="rel">${kids
-              .slice(0, 150)
-              .map((c) => `<li>${chip(c.id)}</li>`)
-              .join('')}${kids.length > 150 ? `<li class="muted">… and ${kids.length - 150} more</li>` : ''}</ul></details>`
-        : '';
-    // Calls are what most people look for first; the other relationships wait under one fold.
-    const byKind = (/** @type {GraphEdge[]} */ list, /** @type {string} */ kind) => list.filter((e) => e.kind === kind);
-    const rels = relationSection(REL_TITLES.calls[0], byKind(out, 'calls'), 't') + relationSection(REL_TITLES.calls[1], byKind(inc, 'calls'), 's');
-    let more = '';
-    for (const [kind, [outTitle, inTitle]] of Object.entries(REL_TITLES)) {
-        if (kind === 'calls') continue;
-        more += relationSection(outTitle, byKind(out, kind), 't', true) + relationSection(inTitle, byKind(inc, kind), 's', true);
-    }
-    if (n.kind === 'file' || n.kind === 'class' || n.kind === 'struct' || n.kind === 'namespace') more += dependencySections(n.id);
-    const moreCount = (more.match(/<details/g) || []).length;
-    const moreRels = more ? `<details class="morerels"><summary>More relationships <span class="muted">${moreCount}</span></summary>${more}</details>` : '';
-
-    const isFn = n.kind === 'function' || n.kind === 'method';
-    const box = isBox(n.id);
-    const flags = [KIND_LABEL[n.kind] || n.kind, n.access, n.isPure ? 'pure virtual' : n.isVirtual ? 'virtual' : '', n.isOverride ? 'override' : '', n.isStatic ? 'static' : ''].filter(Boolean);
-    const status = n.status ? ` <span class="pill st-${esc(n.status)}">${esc(n.status)}</span>` : '';
-    const hasDecl = !!n.declFile || (!!n.defFile && n.defFile !== n.file);
-    el.innerHTML = `
-    <div class="dhead"><span class="dot big k-${esc(n.kind)}${n.header ? ' hdr' : ''}"></span><div><div class="dname">${esc(n.name)}${status}</div><div class="muted">${esc(flags.join(' · '))}</div></div></div>
-    ${n.qname && n.qname !== n.name ? `<div class="qname">${esc(n.qname)}</div>` : ''}
-    ${n.signature ? `<pre class="sig">${esc(n.signature)}</pre>` : ''}
-    ${summaryHtml(n)}
-    ${conceptPills(n.id)}
-    ${state.summaries.get(n.id)?.status === 'ready' ? '' : `<p class="desc">${describeNode(n)}</p>`}
-    ${locs}
-    <div class="actions">
-      <button data-act="open" class="primary" title="Open it in the editor">Open source</button>
-      ${hasDecl ? '<button data-act="decl" title="Open its declaration">Declaration</button>' : ''}
-      ${box ? `<button data-act="toggle">${state.expanded.has(n.id) ? 'Close' : 'Open'} in graph</button>` : n.kind !== 'file' ? `<button data-act="code" title="Show or hide the code inside the graph">${state.openCode.has(n.id) ? 'Hide code' : 'Show code'}</button>` : ''}
-      <button data-act="center" title="Center the graph on it">Center</button>
-    </div>
-    <div class="actions">
-      <button data-act="explain" title="Ask the AI to explain this">Explain with AI</button>
-      ${isFn ? '<button data-act="trace" title="Ask the AI to trace the execution path starting here">Trace path with AI</button>' : ''}
-    </div>
-    ${contains}
-    ${rels}${moreRels}
-    ${rels || moreRels || kids.length ? '' : '<p class="muted">No relationships found.</p>'}`;
-}
-
-$('tab-details').addEventListener('click', (ev) => {
-    const target = /** @type {HTMLElement} */ (ev.target);
-    const n = state.selected ? state.byId.get(state.selected) : undefined;
-    const node = /** @type {HTMLElement | null} */ (target.closest('[data-node]'))?.dataset.node;
-    if (node) {
-        ev.preventDefault();
-        if (ev.ctrlKey || ev.metaKey) openSource(node);
-        else focusNode(node);
-        return;
-    }
-    const link = /** @type {HTMLElement | null} */ (target.closest('[data-open-file]'));
-    if (link) {
-        ev.preventDefault();
-        send({ type: 'openLocation', file: link.dataset.openFile || '', line: Number(link.dataset.openLine) || 1 });
-        return;
-    }
-    const concept = /** @type {HTMLElement | null} */ (target.closest('[data-concept]'))?.dataset.concept;
-    if (concept) {
-        const concepts = state.data?.concepts ?? {};
-        highlightNodes(Object.keys(concepts).filter((id) => state.byId.has(id) && concepts[id].includes(concept)));
-        return;
-    }
-    const act = /** @type {HTMLElement | null} */ (target.closest('[data-act]'))?.dataset.act;
-    if (!act || !n) return;
-    if (act === 'open') openSource(n.id);
-    else if (act === 'decl') {
-        const decl = n.declFile ? { file: n.declFile, line: n.declLine } : { file: n.file, line: n.line };
-        send({ type: 'openLocation', file: decl.file, line: decl.line || 1 });
-    } else if (act === 'toggle') toggle(n.id);
-    else if (act === 'code') toggleCode(n.id);
-    else if (act === 'center') focusNode(n.id);
-    else if (act === 'explain') ask(explainQuestion(n), 'ask', n.id);
-    else if (act === 'trace') ask(`What happens when ${n.qname || n.name} runs?`, 'path', n.id);
-    else if (act === 'resummarize') {
-        state.summaries.set(n.id, { status: 'loading' });
-        send({ type: 'getSummary', id: n.id, refresh: true });
-        renderDetails();
-    }
+connect({
+    state,
+    persist,
+    focusNode,
+    toggle,
+    // A class shows either its members or its code, not both.
+    toggleCode: (id) => {
+        if (state.expanded.has(id)) toggle(id);
+        toggleCode(id);
+    },
+    center: (id) => {
+        const r = representative(id);
+        const el = r ? cy.$id(r) : cy.collection();
+        if (el.nonempty()) cy.animate({ center: { eles: el }, zoom: Math.max(cy.zoom(), 1) }, { duration: 300, complete: placeCards });
+    },
+    showHighlight,
+    revealHighlight,
+    showTab,
 });
 
-/** @param {Extract<ToWebviewMessage, {type: 'summary'}>} m */
-function receiveSummary(m) {
-    if (m.cancelled) state.summaries.delete(m.id); // asked again on the next selection
-    else if (m.summary) state.summaries.set(m.id, { status: 'ready', text: m.summary.purpose, tags: m.summary.tags, notes: m.summary.notes, model: m.model });
-    else {
-        const note = m.unavailable ? 'An AI description needs a language model in VS Code (for example GitHub Copilot Chat).' : m.error ? `Could not describe it: ${m.error}` : '';
-        state.summaries.set(m.id, { status: 'none', note });
-    }
-    if (m.id === state.selected) renderSelection();
-}
-
-/** @param {Extract<ToWebviewMessage, {type: 'aiResult'}>} m */
-function receiveAnswer(m) {
-    Object.assign(state.ai, {
-        busy: false,
-        answer: m.answer,
-        error: !!m.error,
-        model: m.model,
-        evidence: m.evidence || [],
-        confidence: m.confidence,
-        confidenceReason: m.confidenceReason,
-    });
-    if (!m.error && !m.cancelled) /** @type {HTMLTextAreaElement} */ ($('question')).value = '';
-    renderAnswer();
-    if (m.highlight?.length || m.path?.length) highlightNodes(m.highlight || [], m.path || []);
-}
-
-$('askForm').addEventListener('submit', (ev) => {
-    ev.preventDefault();
-    const q = /** @type {HTMLTextAreaElement} */ ($('question')).value.trim();
-    if (!q || state.ai.busy) return;
-    ask(q, /** @type {HTMLInputElement} */ ($('pathMode')).checked ? 'path' : 'ask', contextNode()?.id);
-});
+$('sideToggle').onclick = () => setSide(!state.side.open);
+$('sideClose').onclick = () => setSide(false);
+for (const b of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.tabs [data-tab]'))) b.onclick = () => switchTab(b.dataset.tab || 'details');
+$('question').addEventListener('input', () =>
+    $('suggestions').classList.toggle('hidden', !!(/** @type {HTMLTextAreaElement} */ ($('question')).value.trim() || S.ai.question)),
+);
 $('question').addEventListener('keydown', (ev) => {
-    // Enter asks; Shift+Enter adds a line.
-    if (ev.key === 'Enter' && !ev.shiftKey) {
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) {
         ev.preventDefault();
-        $('askForm').dispatchEvent(new Event('submit', { cancelable: true }));
+        ask();
     }
 });
-$('cancelAsk').onclick = () => send({ type: 'cancelAsk' });
-$('answer').addEventListener('click', (ev) => {
+document.addEventListener('click', (ev) => {
     const target = /** @type {HTMLElement} */ (ev.target);
-    const ref = /** @type {HTMLElement | null} */ (target.closest('[data-node]'));
-    if (ref?.dataset.node) {
-        ev.preventDefault();
-        if (ev.ctrlKey || ev.metaKey) openSource(ref.dataset.node);
-        else focusNode(ref.dataset.node);
-        return;
-    }
-    const link = /** @type {HTMLElement | null} */ (target.closest('[data-open-file]'));
-    if (link) {
-        ev.preventDefault();
-        send({ type: 'openLocation', file: link.dataset.openFile || '', line: Number(link.dataset.openLine) || 1 });
+    if (S.historyOpen && target.isConnected && !target.closest('#history, #historyBtn')) {
+        S.historyOpen = false;
+        renderHistory();
     }
 });
-$('history').addEventListener('change', () => {
-    const sel = /** @type {HTMLSelectElement} */ ($('history'));
-    const entry = state.ai.history.find((e) => e.id === sel.value);
-    sel.value = '';
-    if (!entry) return;
-    Object.assign(state.ai, {
-        busy: false,
-        question: entry.question,
-        answer: entry.answer,
-        steps: entry.steps || [],
-        error: false,
-        model: entry.model,
-        evidence: entry.evidence || [],
-        confidence: entry.confidence,
-        confidenceReason: entry.confidenceReason,
-    });
-    renderAnswer();
-    highlightNodes(entry.highlight || [], entry.path || []);
-});
-$('historyClear').onclick = () => send({ type: 'aiHistoryClear' });
 
 // ---------------------------------------------------------------------------
 // Messages from the extension
@@ -1837,33 +1362,21 @@ function loadGraph(m) {
     state.byId = new Map(data.nodes.map((n) => [n.id, n]));
     state.childCount = new Map();
     state.descCount = new Map();
-    state.children = new Map();
     for (const n of data.nodes) {
         if (n.kind === 'file' || !n.parent) continue;
         state.childCount.set(n.parent, (state.childCount.get(n.parent) || 0) + 1);
-        const kids = state.children.get(n.parent);
-        if (kids) kids.push(n);
-        else state.children.set(n.parent, [n]);
         for (const box of boxesAround(n.id)) state.descCount.set(box, (state.descCount.get(box) || 0) + 1);
     }
-    state.out = new Map();
-    state.inc = new Map();
-    for (const e of data.edges) {
-        let list = state.out.get(e.s);
-        if (!list) state.out.set(e.s, (list = []));
-        list.push(e);
-        list = state.inc.get(e.t);
-        if (!list) state.inc.set(e.t, (list = []));
-        list.push(e);
-    }
+    // The side panel reads the graph as the extension sent it.
+    setGraph(m.data, m.title);
+    if (S.impact) setTimeout(() => S.impact && requestImpact(true), 0);
     for (const id of [...state.expanded]) if (!state.byId.has(id)) state.expanded.delete(id);
     if (state.selected && !state.byId.has(state.selected)) state.selected = null;
     for (const id of [...state.highlighted]) if (!state.byId.has(id)) state.highlighted.delete(id);
     state.path = state.path.filter((id) => state.byId.has(id));
-    // Code may have changed: drop cached snippets and summaries, and reload the open cards.
+    // Code may have changed: drop cached snippets and reload the open cards.
     state.code.clear();
     state.sourceReqs.clear();
-    state.summaries.clear();
     for (const id of [...state.openCode]) {
         if (!state.byId.has(id)) state.openCode.delete(id);
         else requestCode(id);
@@ -1876,6 +1389,7 @@ function loadGraph(m) {
     renderCompare();
     renderLegend();
     renderSelection();
+    renderSuggestions();
     setStatus('');
     // Fit on the first graph and when switching to or from a comparison; refreshes keep the view.
     render({ fit: state.firstGraph || modeChanged });
@@ -1905,6 +1419,7 @@ window.addEventListener('message', (event) => {
             break;
         case 'focus':
             focusNode(m.nodeId);
+            switchTab('details', true);
             break;
         case 'loading':
             setStatus(m.message, undefined, true);
@@ -1916,39 +1431,72 @@ window.addEventListener('message', (event) => {
             receiveCode(m);
             break;
         case 'aiStart':
-            // Also for questions asked from the command palette.
-            Object.assign(state.ai, { busy: true, question: m.question, answer: '', steps: [], error: false, model: undefined, evidence: [], confidence: undefined, confidenceReason: undefined });
-            if (!state.side.open || state.side.tab !== 'ai') setSide(true, 'ai');
+            // Keep the mode when this confirms a question asked from the panel; questions from the command palette use Ask.
+            S.ai = { busy: true, question: m.question, answer: '', model: null, steps: [], mode: S.ai.busy && S.ai.question === m.question ? S.ai.mode : 'ask' };
+            /** @type {HTMLTextAreaElement} */ ($('question')).value = m.question;
+            switchTab('ai');
             renderAnswer();
             break;
         case 'aiPartial':
-            state.ai.answer = m.text;
+            S.ai.answer = m.text;
             renderAnswer();
             break;
         case 'aiStep':
-            state.ai.steps.push(m.step);
+            S.ai.steps.push(m.step);
             renderAnswer();
+            setVisited(/** @type {any} */ (m.step).nodeIds);
             break;
         case 'aiResult':
-            receiveAnswer(m);
+            S.ai = {
+                busy: false,
+                question: S.ai.question,
+                mode: S.ai.mode,
+                steps: S.ai.steps || [],
+                open: S.ai.open === 'how' ? 'how' : undefined,
+                error: !!m.error,
+                answer: m.answer,
+                highlight: m.highlight,
+                path: m.path,
+                hops: m.hops,
+                routes: m.routes,
+                routeIdx: 0,
+                evidence: m.evidence,
+                confidence: m.confidence,
+                confidenceReason: m.confidenceReason,
+                model: m.model,
+                entryId: m.entryId,
+                time: m.time,
+            };
+            S.visited = null;
+            if (!m.error && !m.cancelled) /** @type {HTMLTextAreaElement} */ ($('question')).value = '';
+            renderAnswer();
+            // Files start closed here, so the answer's nodes are opened up to be seen.
+            if (m.highlight?.length) applyAiHighlight(true);
+            else renderer.refreshStyle();
             break;
         case 'aiHistory':
-            state.ai.history = m.entries || [];
+            S.history = m.entries || [];
             renderHistory();
             break;
         case 'summary':
-            receiveSummary(m);
+            onSummary(m);
+            break;
+        case 'impactResult':
+            onImpact(m);
+            break;
+        case 'semanticBuilding':
+            S.semanticBusy = !!m.busy;
+            if (!state.selected) renderDetails();
             break;
     }
 });
 
 // Used by test/harness.html to inspect the graph.
-Object.assign(window, { __codeGraph: { cy, state, focusNode, toggle, toggleCode, select, highlightNodes, finishMoves: leafPositions } });
+Object.assign(window, { __codeGraph: { cy, state, S, focusNode, toggle, toggleCode, select, highlightNodes, finishMoves: leafPositions } });
 
 renderLegend();
 renderEdgeModes();
 renderAnswer();
-renderHistory();
 setSide(state.side.open);
 setStatus('Loading…', undefined, true);
 send({ type: 'ready' });
