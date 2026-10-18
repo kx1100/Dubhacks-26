@@ -252,5 +252,28 @@ const context = { subscriptions: [], extensionUri: Uri.file(path.join(__dirname,
   if (!imp || imp.id !== logId || imp.requested !== 'remove' || imp.changeType !== 'remove' || imp.summary.high < 2 || !imp.labels.relations.caller) throw new Error('bad impact ' + JSON.stringify(imp && imp.summary));
   await onMessage({ type: 'impact', id: 'dir:src', changeType: 'remove' });
   if (!posted.filter(m => m.type === 'impactResult').pop().error) throw new Error('folder impact should be refused');
+
+  // The AI check of an impact prediction.
+  const checker = {
+    name: 'Checker', family: 'mock', maxInputTokens: 100000,
+    async sendRequest(messages) {
+      const refs = messages[0].content.match(/^A\d+(?= )/gm) || [];
+      return { text: (async function* () { yield JSON.stringify(refs.map(ref => ({ ref, verdict: 'breaks', reason: 'two arguments' }))); })() };
+    }
+  };
+  vscode.lm.selectChatModels = async () => [checker];
+  posted.length = 0;
+  await onMessage({ type: 'impactAI', id: logId, changeType: 'signature', description: 'add a parameter' });
+  const air = posted.find(m => m.type === 'impactAIResult');
+  if (!air || air.error || air.asked !== 2 || air.verdicts.length !== 2 || air.verdicts.some(v => v.verdict !== 'breaks' || v.score < 85) || air.model !== 'Checker') throw new Error('bad impact AI ' + JSON.stringify(air));
+  vscode.lm.selectChatModels = async () => [];
+  posted.length = 0;
+  await onMessage({ type: 'impactAI', id: logId, changeType: 'signature' });
+  if (!/No language model/.test(posted.find(m => m.type === 'impactAIResult').error)) throw new Error('missing model not reported for impact');
+  // Checking against edits reads git: the sample is committed, so nothing has changed.
+  posted.length = 0;
+  await onMessage({ type: 'impactCheck', id: logId, changeType: 'signature' });
+  const chk = posted.find(m => m.type === 'impactCheckResult');
+  if (!chk || chk.error || chk.compared !== 'symbols' || chk.targetChanged !== null || chk.changedCount !== 0 || chk.hits.length !== 0) throw new Error('bad impact check ' + JSON.stringify(chk));
   console.log('SMOKE OK');
 })().catch(e => { console.error(e); process.exit(1); });

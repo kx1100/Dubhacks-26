@@ -48,6 +48,32 @@
         const result = predictImpact(window.__tools, m.id, m.changeType);
         setTimeout(() => window.postMessage({ type: 'impactResult', id: m.id, requested: m.changeType, ...result, labels: { relations: RELATION_LABELS, changes: CHANGE_TYPES } }, '*'), 20);
       }
+      // The AI check of an impact prediction: the real module, with a model that answers in turn breaks / fine / review.
+      if (m.type === 'impactAI') {
+        const { predictImpact } = load('impact');
+        const { checkWithModel } = load('impactCheck');
+        if (!window.__tools || window.__tools.graph !== window.__FIXTURES.graph) window.__tools = new (load('graphTools').GraphTools)(window.__FIXTURES.graph);
+        const tools = window.__tools;
+        tools.readSource = async file => window.__FIXTURES.sources[file] || null;
+        const impact = predictImpact(tools, m.id, m.changeType);
+        window.__impactPrompt = null;
+        checkWithModel(tools, impact, m.description, async prompt => {
+          window.__impactPrompt = prompt;
+          const refs = prompt.match(/^A\d+(?= )/gm) || [];
+          const verdicts = ['breaks', 'fine', 'review'];
+          return JSON.stringify(refs.map((ref, i) => ({ ref, verdict: verdicts[i % 3], reason: 'Reason ' + (i + 1), line: 3 })));
+        }).then(r => setTimeout(() => window.postMessage({ type: 'impactAIResult', id: m.id, requested: m.changeType, ...r, model: 'Harness' }, '*'), 60));
+      }
+      // Checking a prediction against edits: the real module, against editedSample() instead of git.
+      if (m.type === 'impactCheck') {
+        const { buildGraph } = load('graph/builder');
+        const { diffGraphs } = load('graph/diff');
+        const { checkPrediction } = load('impact');
+        const before = buildGraph(Object.keys(window.__FIXTURES.sources).sort().map(p => ({ path: p, text: window.__FIXTURES.sources[p] })));
+        const after = buildGraph(editedSample());
+        const result = checkPrediction(new (load('graphTools').GraphTools)(before), diffGraphs(before, after), m.id, m.changeType);
+        setTimeout(() => window.postMessage({ type: 'impactCheckResult', id: m.id, requested: m.changeType, ...result, base: 'HEAD' }, '*'), 60);
+      }
       // History, kept like the extension does (newest first).
       if (m.type === 'aiHistoryDelete') postHistory(window.__history.filter(e => e.id !== m.id));
       if (m.type === 'aiHistoryClear') postHistory([]);
@@ -63,16 +89,39 @@
     setState() {}
   });
 
-  // A minimal CommonJS loader for the extension's own modules in src/ai/ (no vscode dependency).
+  // A minimal CommonJS loader for the extension's modules that don't need vscode.
+  // load('ai/impact') loads src/ai/impact.js; requires inside it resolve relative to it.
   const loaded = {};
   function load(name) {
+    if (!name.includes('/')) name = 'ai/' + name;
     if (loaded[name]) return loaded[name].exports;
     const xhr = new XMLHttpRequest();
-    xhr.open('GET', '../src/ai/' + name + '.js', false);
+    xhr.open('GET', '../src/' + name + '.js', false);
     xhr.send();
     const module = (loaded[name] = { exports: {} });
-    new Function('require', 'module', 'exports', xhr.responseText)(p => load(p.replace(/^\.\//, '').replace(/\.js$/, '')), module, module.exports);
+    const dir = name.split('/').slice(0, -1);
+    const resolve = p => {
+      const parts = [...dir];
+      for (const seg of p.replace(/\.js$/, '').split('/')) {
+        if (seg === '..') parts.pop();
+        else if (seg !== '.') parts.push(seg);
+      }
+      return parts.join('/');
+    };
+    new Function('require', 'module', 'exports', xhr.responseText)(p => load(resolve(p)), module, module.exports);
     return module.exports;
+  }
+
+  /** The sample with an edit made: log_message gets a parameter, main is updated, pixelCount changes. */
+  function editedSample() {
+    const edits = {
+      'c/logger.c': ['void log_message(log_level level, const char* msg)', 'void log_message(log_level level, const char* msg, int code)'],
+      'c/logger.h': ['void log_message(log_level level, const char* msg);', 'void log_message(log_level level, const char* msg, int code);'],
+      'src/main.cpp': ['log_message(LOG_INFO, "done");', 'log_message(LOG_INFO, "done", 0);'],
+      'src/canvas.cpp': ['return static_cast<int>(pixels_.size());', 'return (int)pixels_.size();']
+    };
+    const f = window.__FIXTURES;
+    return Object.keys(f.sources).sort().map(p => ({ path: p, text: edits[p] ? f.sources[p].replace(edits[p][0], edits[p][1]) : f.sources[p] }));
   }
 
   window.__history = [];

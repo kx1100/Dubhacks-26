@@ -238,4 +238,65 @@ function predictImpact(tools, targetId, changeType) {
   };
 }
 
-module.exports = { predictImpact, canPredict, isTestFile, CHANGE_TYPES, RELATION_LABELS, WEIGHTS };
+const RELATED_DEPTH = 2; // a missed change this close to the target (any relationship) counts against recall
+
+/**
+ * Compares the prediction made on the code before an edit with what the edit
+ * actually changed.
+ *   hits         predicted places that changed
+ *   falseAlarms  places predicted as high or medium risk that did not change
+ *   missed       changed places that were not predicted; `related` ones are
+ *                within RELATED_DEPTH relationships of the target, the rest are
+ *                probably unrelated edits
+ * Symbols are compared for functions and classes, files for a file.
+ * @param {import('./graphTools').GraphTools} beforeTools  the graph before the edit
+ * @param {{nodes:object[]}} diff  diffGraphs(before, after)
+ */
+function checkPrediction(beforeTools, diff, targetId, changeType) {
+  const prediction = predictImpact(beforeTools, targetId, changeType);
+  if (prediction.error) return prediction;
+  const fileLevel = beforeTools.nodes.get(targetId).kind === 'file';
+  const comparable = n => !!n && (fileLevel ? n.kind === 'file' : !['file', 'dir', 'namespace', 'field', 'variable'].includes(n.kind));
+  const status = new Map(diff.nodes.filter(n => n.status).map(n => [n.id, n.status]));
+  // Added code is new, not an affected place.
+  const changed = new Set(diff.nodes.filter(n => n.status && n.status !== 'added' && n.id !== targetId && comparable(n)).map(n => n.id));
+
+  const predicted = prediction.items.filter(i => comparable(beforeTools.nodes.get(i.id)));
+  const flagged = predicted.filter(i => i.tier !== 'low');
+  const pick = i => ({ id: i.id, relation: i.relation, score: i.score, tier: i.tier, status: status.get(i.id) || null });
+  const hits = predicted.filter(i => changed.has(i.id)).map(pick);
+  const falseAlarms = flagged.filter(i => !changed.has(i.id)).map(pick);
+
+  // Distance from the target over any relationship, in the before graph.
+  const near = new Set([targetId]);
+  let frontier = [targetId];
+  for (let d = 0; d < RELATED_DEPTH && frontier.length; d++) {
+    const next = [];
+    for (const id of frontier) {
+      for (const e of [...(beforeTools.out.get(id) || []), ...(beforeTools.inc.get(id) || [])]) {
+        const other = e.s === id ? e.t : e.s;
+        if (!near.has(other)) (near.add(other), next.push(other));
+      }
+    }
+    frontier = next;
+  }
+  const predictedIds = new Set(predicted.map(i => i.id));
+  const missed = [...changed].filter(id => !predictedIds.has(id)).map(id => ({ id, status: status.get(id), related: near.has(id) }));
+  const missedRelated = missed.filter(m => m.related).length;
+  const flaggedHits = flagged.filter(i => changed.has(i.id)).length;
+
+  return {
+    target: targetId,
+    changeType: prediction.changeType,
+    targetChanged: status.get(targetId) || null,
+    compared: fileLevel ? 'files' : 'symbols',
+    hits,
+    falseAlarms,
+    missed,
+    precision: flagged.length ? flaggedHits / flagged.length : null,
+    recall: hits.length + missedRelated ? hits.length / (hits.length + missedRelated) : null,
+    changedCount: changed.size
+  };
+}
+
+module.exports = { predictImpact, checkPrediction, canPredict, isTestFile, CHANGE_TYPES, RELATION_LABELS, WEIGHTS };

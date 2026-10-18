@@ -11,7 +11,8 @@ const { askQuestion } = require('./ai');
 const { selectModel, streamText } = require('./ai/model');
 const { GraphTools } = require('./ai/graphTools');
 const { contentKey, summarize } = require('./ai/summaries');
-const { predictImpact, RELATION_LABELS, CHANGE_TYPES } = require('./ai/impact');
+const { predictImpact, checkPrediction, RELATION_LABELS, CHANGE_TYPES } = require('./ai/impact');
+const { checkWithModel } = require('./ai/impactCheck');
 
 const GIT_SCHEME = 'codegraph-git';
 const MAX_SNIPPET_LINES = 200; // longest snippet sent to the webview for inline code
@@ -33,6 +34,7 @@ class GraphPanel {
     this.compare = null; // {root, base, target, baseLabel, targetLabel, graph}
     this.aiCancel = null;
     this.summaryCancel = null;
+    this.impactCancel = null;
     this.toolsByGraph = new WeakMap(); // graph -> GraphTools, for summaries
   }
 
@@ -119,6 +121,12 @@ class GraphPanel {
         break;
       case 'impact':
         this.sendImpact(m);
+        break;
+      case 'impactAI':
+        await this.impactAI(m);
+        break;
+      case 'impactCheck':
+        await this.impactCheck(m);
         break;
       case 'cancelAsk':
         if (this.aiCancel) this.aiCancel.cancel();
@@ -310,6 +318,67 @@ class GraphPanel {
     const tools = this.graphTools();
     const result = tools ? predictImpact(tools, m.id, m.changeType) : { error: 'The graph is not ready yet.' };
     this.post({ type: 'impactResult', id: m.id, requested: m.changeType, ...result, labels: { relations: RELATION_LABELS, changes: CHANGE_TYPES } });
+  }
+
+  /** Replies to impactAI {id, changeType, description}: the model checks the riskiest places. */
+  async impactAI(m) {
+    const reply = { type: 'impactAIResult', id: m.id, requested: m.changeType };
+    const tools = this.graphTools();
+    const impact = tools ? predictImpact(tools, m.id, m.changeType) : { error: 'The graph is not ready yet.' };
+    if (impact.error) return this.post({ ...reply, error: impact.error });
+    const model = await selectModel();
+    if (!model) return this.post({ ...reply, error: 'No language model is available in VS Code (for example GitHub Copilot Chat).' });
+    if (this.impactCancel) this.impactCancel.cancel();
+    const cts = new vscode.CancellationTokenSource();
+    this.impactCancel = cts;
+    try {
+      const description = String(m.description || '').trim().slice(0, 500);
+      const result = await checkWithModel(tools, impact, description, prompt => streamText(model, prompt, cts.token, () => {}));
+      this.post(cts.token.isCancellationRequested ? { ...reply, cancelled: true } : { ...reply, ...result, model: model.name || model.family });
+    } catch (err) {
+      this.post(cts.token.isCancellationRequested ? { ...reply, cancelled: true } : { ...reply, error: (err && err.message) || String(err) });
+    } finally {
+      if (this.impactCancel === cts) this.impactCancel = null;
+      cts.dispose();
+    }
+  }
+
+  /**
+   * Replies to impactCheck {id, changeType}: predicts from the last commit and
+   * compares with what the uncommitted edits actually changed. Only files in the
+   * workspace folder are read, with their paths made workspace-relative, so node
+   * ids match the graph on screen.
+   */
+  async impactCheck(m) {
+    const reply = { type: 'impactCheckResult', id: m.id, requested: m.changeType };
+    try {
+      const folders = vscode.workspace.workspaceFolders || [];
+      const graph = this.index.graph;
+      const node = graph && graph.nodes.find(n => n.id === m.id);
+      const file = node ? node.defFile || node.file || '' : '';
+      const multiRoot = folders.length > 1;
+      const folder = multiRoot ? folders.find(f => file.startsWith(f.name + '/')) || folders[0] : folders[0];
+      if (!folder) throw new Error('Open a folder to compare with git.');
+      const root = await git.repoRoot(folder.uri.fsPath);
+      const rel = path.relative(root, folder.uri.fsPath).split(path.sep).join('/');
+      if (rel.startsWith('..')) throw new Error('The workspace folder is not inside its git repository.');
+      const repoPrefix = rel ? rel + '/' : '';
+      const wsPrefix = multiRoot ? folder.name + '/' : '';
+      const cfg = vscode.workspace.getConfiguration('codeGraph');
+      const load = async rev =>
+        (await git.readRevision(root, rev, cfg.get('exclude'), cfg.get('maxFiles')))
+          .filter(s => s.path.startsWith(repoPrefix))
+          .map(s => ({ path: wsPrefix + s.path.slice(repoPrefix.length), text: s.text }));
+      const [beforeSrc, afterSrc] = await Promise.all([load('HEAD'), load(git.WORKTREE)]);
+      const cache = new Map();
+      const before = buildGraph(beforeSrc, cache);
+      const after = buildGraph(afterSrc, cache);
+      if (!before.nodes.some(n => n.id === m.id)) throw new Error('It is not in the last commit, so there is no earlier prediction to check.');
+      const result = checkPrediction(new GraphTools(before), diffGraphs(before, after), m.id, m.changeType);
+      this.post({ ...reply, ...result, base: 'HEAD' });
+    } catch (err) {
+      this.post({ ...reply, error: (err && err.message) || String(err) });
+    }
   }
 
   // ---- AI node summaries (cached per workspace until the code changes) ------------

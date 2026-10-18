@@ -115,4 +115,41 @@ assert.match(r.summary.notes.join(' '), /Tests reach this code/);
 const testItem = r.items.find(i => i.id === 'fn:test_push');
 assert.ok(testItem.test && testItem.score < r.items.find(i => i.id === 'fn:push').score, 'a test that would fail is the lowest risk');
 
+// Checking a prediction against an edit: log_message gets a new parameter, main is updated,
+// render is not (yet), and pixelCount changes for unrelated reasons.
+const { diffGraphs } = require('../src/graph/diff');
+const edited = sources.map(s => {
+  let text = s.text;
+  if (s.path === 'c/logger.c') text = text.replace('void log_message(log_level level, const char* msg)', 'void log_message(log_level level, const char* msg, int code)');
+  if (s.path === 'c/logger.h') text = text.replace('void log_message(log_level level, const char* msg);', 'void log_message(log_level level, const char* msg, int code);');
+  if (s.path === 'src/main.cpp') text = text.replace('log_message(LOG_INFO, "done");', 'log_message(LOG_INFO, "done", 0);');
+  if (s.path === 'src/canvas.cpp') text = text.replace('return static_cast<int>(pixels_.size());', 'return (int)pixels_.size();');
+  return { ...s, text };
+});
+const before = buildGraph(sources);
+const after = buildGraph(edited);
+const beforeTools = new GraphTools(before);
+const logId = beforeTools.resolve('log_message').id;
+const { checkPrediction } = require('../src/ai/impact');
+const check = checkPrediction(beforeTools, diffGraphs(before, after), logId, 'signature');
+const nm = x => beforeTools.nodes.get(x.id).qname;
+assert.strictEqual(check.targetChanged, 'removed', 'a new signature is a new function id');
+assert.strictEqual(check.compared, 'symbols');
+assert.deepStrictEqual(check.hits.map(nm), ['main']);
+assert.deepStrictEqual(check.falseAlarms.map(nm), ['geo::Canvas::render']);
+assert.deepStrictEqual(check.missed.map(m => [nm(m), m.related]), [['geo::Canvas::pixelCount', false]]);
+assert.deepStrictEqual([check.precision, check.recall, check.changedCount], [0.5, 1, 2]);
+// A related change that was not predicted counts against recall.
+const edited2 = edited.map(s => (s.path === 'c/logger.c' ? { ...s, text: s.text.replace('switch (level) {', 'switch ((int)level) {') } : s));
+const check2 = checkPrediction(beforeTools, diffGraphs(before, buildGraph(edited2)), logId, 'signature');
+const lv = check2.missed.find(m => nm(m) === 'level_name');
+assert.ok(lv && lv.related, 'level_name is called by log_message');
+assert.strictEqual(check2.recall, 0.5);
+// Files are compared for a file target.
+const hdr = checkPrediction(beforeTools, diffGraphs(before, after), 'file:c/logger.h', 'signature');
+assert.strictEqual(hdr.compared, 'files');
+assert.deepStrictEqual(hdr.hits.map(h => h.id).sort(), ['file:c/logger.c', 'file:src/canvas.cpp', 'file:src/main.cpp'], 'every edited includer');
+assert.strictEqual(hdr.targetChanged, 'modified');
+assert.match(checkPrediction(beforeTools, diffGraphs(before, after), 'dir:src', 'signature').error, /can be predicted/);
+
 console.log('impact: ok');

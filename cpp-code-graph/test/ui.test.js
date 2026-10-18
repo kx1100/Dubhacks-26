@@ -383,7 +383,7 @@ async function main() {
       tab: cg.S.tab,
       change: document.querySelector('.impchange .active').dataset.change,
       sum: document.querySelector('.impsum').textContent.replace(/\\s+/g, ' ').trim(),
-      groups: [...document.querySelectorAll('#tab-impact details > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
+      groups: [...document.querySelectorAll('#tab-impact > details:not(.impcheck) > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
       items: [...document.querySelectorAll('#tab-impact ul.imp li')].map(li => li.className + ' ' + li.querySelector('.risk').textContent + ' ' + li.querySelector('.chip').textContent.trim()),
       notes: [...document.querySelectorAll('.impnotes li')].map(li => li.textContent),
       predict: !!document.querySelector('#tab-impact .predict'),
@@ -432,6 +432,48 @@ async function main() {
     // Folders have no button.
     await evaluate(`cg.reveal('dir:src', { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); true`);
     assert.strictEqual(await evaluate("!!document.querySelector('[data-act=\"impact\"]')"), false);
+
+    // 18. The AI checks the riskiest places, and the prediction is checked against edits.
+    await evaluate(`cg.reveal(nodeByName('log_message').id, { center: false }); document.querySelector('.tabs [data-tab="details"]').click(); document.querySelector('[data-act="impact"]').click(); true`);
+    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.target === nodeByName('log_message').id && document.getElementById('impAI'))"), 'AI button');
+    assert.strictEqual(await evaluate('cg.S.impact.changeType'), 'rename', 'the last kind of change is kept');
+    await evaluate("document.querySelector('[data-change=\"signature\"]').click(); true");
+    assert(await evaluate("waitFor(() => cg.S.impact.result && cg.S.impact.result.changeType === 'signature' && document.getElementById('impAI'))"));
+    assert.match(await evaluate("document.querySelector('.impai').textContent"), /reads the code at the 2 riskiest places/);
+    await evaluate(`const d = document.getElementById('impDesc'); d.value = 'add an int error code parameter'; d.dispatchEvent(new Event('input')); window.__sent.length = 0; document.getElementById('impAI').click(); true`);
+    assert.deepStrictEqual(pick(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impactAI'))")), ['changeType', 'description']), { changeType: 'signature', description: 'add an int error code parameter' });
+    assert.match(await evaluate("document.querySelector('.impai').textContent"), /Reading 2 places/);
+    assert(await evaluate("waitFor(() => cg.S.impact.ai && cg.S.impact.ai.verdicts)"), 'verdicts arrive');
+    assert.match(await evaluate('window.__impactPrompt'), /Planned change: signature or return type: add an int error code parameter/);
+    const ai = JSON.parse(await evaluate(`JSON.stringify({
+      status: document.querySelector('.impai .muted').textContent,
+      rows: [...document.querySelectorAll('#tab-impact ul.imp li')].map(li => [li.querySelector('.chip').textContent.trim(), li.querySelector('.risk').textContent, (li.querySelector('.verdict') || {}).textContent || '', (li.querySelector('.vreason') || {}).textContent || '']),
+      sum: [...document.querySelectorAll('.impcounts span')].map(s => s.textContent).join(', ')
+    })`));
+    assert.strictEqual(ai.status, 'Checked 2 places via Harness: 1 break, 0 need review, 1 likely fine.');
+    const verdictRows = ai.rows.filter(r => r[2]);
+    assert.deepStrictEqual(verdictRows.map(r => [r[1], r[2]]).sort(), [['100', 'breaks'], ['15', 'likely fine']]);
+    assert.ok(verdictRows.every(r => /^Reason \d+ line 3$/.test(r[3])), JSON.stringify(verdictRows));
+    assert.strictEqual(ai.sum, '1 high, 0 medium, 4 low', 'counts follow the verdicts');
+    // The graph uses the adjusted risk.
+    assert.strictEqual(await evaluate("document.querySelectorAll('#layerNodes .node.imp-high').length >= 1"), true);
+    // Check against edits: hits, false alarms and unrelated changes.
+    await evaluate("window.__sent.length = 0; document.getElementById('impCheck').click(); true");
+    assert.strictEqual(JSON.parse(await evaluate("JSON.stringify(window.__sent.find(m => m.type === 'impactCheck'))")).changeType, 'signature');
+    assert(await evaluate("waitFor(() => cg.S.impact.check && cg.S.impact.check.result)"), 'check result');
+    const chk = JSON.parse(await evaluate(`JSON.stringify({
+      text: document.querySelector('.impcheck p:not(.muted)').textContent,
+      score: [...document.querySelectorAll('.impscore > span')].map(s => s.textContent).join(' '),
+      groups: [...document.querySelectorAll('.impcheck details > summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()),
+      hit: [...document.querySelectorAll('.impcheck details')][0].querySelector('.chip').textContent.trim()
+    })`));
+    assert.strictEqual(chk.text, 'It was removed or its signature changed. 2 other places changed.');
+    assert.strictEqual(chk.score, 'Precision 50% Recall 100%');
+    assert.deepStrictEqual(chk.groups, ['Predicted and changed 1', 'Predicted, not changed 1', 'Changed, not predicted 0', 'Other changes, probably unrelated 1']);
+    assert.match(chk.hit, /main/);
+    // A new kind of change starts over.
+    await evaluate("document.querySelector('[data-change=\"behavior\"]').click(); true");
+    assert.deepStrictEqual(JSON.parse(await evaluate('JSON.stringify([cg.S.impact.ai, cg.S.impact.check])')), [null, null]);
 
     console.log('ui: ok');
     ws.close();

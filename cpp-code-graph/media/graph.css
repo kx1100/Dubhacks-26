@@ -1474,3 +1474,44 @@ ul.imp .risk {
 ul.imp .imp-high .risk { background: var(--imp-high); }
 ul.imp .imp-medium .risk { background: var(--imp-medium); }
 ul.imp .imp-low .risk { background: var(--imp-low); }
+
+.impai {
+  margin: 8px 0 10px;
+}
+.impai textarea {
+  width: 100%;
+  resize: vertical;
+}
+.impai .busy {
+  animation: visited-pulse 0.9s ease-in-out infinite alternate;
+}
+.verdict {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.verdict.v-breaks { color: var(--red); }
+.verdict.v-review { color: var(--orange); }
+.verdict.v-fine { color: var(--green); }
+ul.imp .vreason {
+  flex-basis: 100%;
+  margin-left: 30px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.impcheck {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.impscore {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  margin: 4px 0;
+}

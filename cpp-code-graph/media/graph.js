@@ -2067,7 +2067,8 @@
   const TIER_ORDER = { high: 3, medium: 2, low: 1 };
 
   function openImpact(id, changeType) {
-    S.impact = { target: id, changeType: changeType || (S.impact && S.impact.changeType) || 'signature', busy: true, result: null };
+    const description = S.impact ? S.impact.description : '';
+    S.impact = { target: id, changeType: changeType || (S.impact && S.impact.changeType) || 'signature', busy: true, result: null, ai: null, check: null, description: S.impact && S.impact.target === id ? description : '' };
     switchTab('impact');
     requestImpact(false);
   }
@@ -2103,13 +2104,23 @@
     render();
   }
 
+  /** The predicted items, with the AI's blended score and verdict where it checked them, riskiest first. */
+  function impactItems(imp) {
+    const verdicts = imp.ai && imp.ai.verdicts;
+    const items = imp.result.items.map(it => {
+      const v = verdicts && verdicts.get(it.id);
+      return v ? { ...it, score: v.score, tier: v.tier, verdict: v } : it;
+    });
+    return verdicts ? items.sort((a, b) => b.score - a.score) : items;
+  }
+
   /** Visible node -> worst tier of the affected nodes it stands for ('target' for the changed node). */
   function impactTiers(vis) {
     if (!S.highlight || S.highlight.source !== 'impact') return null;
     const imp = S.highlight.impact;
     if (!imp.result || imp.result.error) return null; // a new kind of change is being worked out
     const tiers = new Map();
-    for (const it of imp.result.items) {
+    for (const it of impactItems(imp)) {
       const r = vis.repOf(it.id);
       if (r && (TIER_ORDER[it.tier] || 0) > (TIER_ORDER[tiers.get(r)] || 0)) tiers.set(r, it.tier);
     }
@@ -2151,13 +2162,20 @@
     if (!r) body = '<p class="muted">Working it out…</p>';
     else if (r.error) body = `<p class="muted">${esc(r.error)}</p>`;
     else {
-      const s = r.summary;
+      const items = impactItems(imp);
+      const s = { ...r.summary };
+      if (imp.ai && imp.ai.verdicts) {
+        // Recount with the AI's verdicts.
+        for (const t of ['high', 'medium', 'low']) s[t] = items.filter(i => i.tier === t).length;
+        s.overall = Math.round(100 * (1 - Math.exp(-items.reduce((a, i) => a + i.score, 0) / 250)));
+        s.tier = s.overall >= 60 ? 'high' : s.overall >= 30 ? 'medium' : 'low';
+      }
       const name = id => {
         const x = S.nodes.get(id);
         return x ? x.qname || x.name : id;
       };
       const groups = new Map();
-      for (const it of r.items) {
+      for (const it of items) {
         if (!groups.has(it.relation)) groups.set(it.relation, []);
         groups.get(it.relation).push(it);
       }
@@ -2168,7 +2186,11 @@
             const via = it.depth > 1 && it.via ? ` <span class="muted">via ${esc(name(it.via))}</span>` : '';
             const tags = (it.uncertain ? '<span class="tag uncertain" title="Matched by name only">by name</span>' : '') + (it.test ? '<span class="tag">test</span>' : '');
             const site = it.site ? ` <a class="site" data-open-file="${esc(it.site.file)}" data-open-line="${it.site.line}" data-side="target" title="${esc(it.site.file + ':' + it.site.line)}">↗</a>` : '';
-            return `<li class="imp-${it.tier}"><span class="risk" title="Risk ${it.score} of 100 (${it.tier})">${it.score}</span>${nodeChip(it.id)}${via}${tags}${site}</li>`;
+            const v = it.verdict;
+            const verdict = v ? `<span class="verdict v-${v.verdict}" title="The AI read this code">${VERDICT_LABELS[v.verdict]}</span>` : '';
+            const vline = v && v.file && v.line ? ` <a class="site" data-open-file="${esc(v.file)}" data-open-line="${v.line}" data-side="target" title="${esc(v.file + ':' + v.line)}">line ${v.line}</a>` : '';
+            const reason = v && v.reason ? `<div class="vreason">${esc(v.reason)}${vline}</div>` : '';
+            return `<li class="imp-${it.tier}"><span class="risk" title="Risk ${it.score} of 100 (${it.tier})${v ? ', adjusted by the AI' : ''}">${it.score}</span>${nodeChip(it.id)}${via}${tags}${verdict}${site}${reason}</li>`;
           })
           .join('')}</ul></details>`)
         .join('');
@@ -2177,7 +2199,9 @@
         ${s.count ? `<div class="impcounts"><span class="imp-high">${s.high} high</span><span class="imp-medium">${s.medium} medium</span><span class="imp-low">${s.low} low</span></div>` : ''}
         <ul class="impnotes">${s.notes.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
         ${s.count ? '<div class="askrow"><button id="impShow" class="hltoggle"></button></div>' : ''}
-        ${list}${r.truncated ? '<p class="muted">Only the 300 most affected are listed.</p>' : ''}`;
+        ${s.count ? renderImpactAI(imp, items) : ''}
+        ${list}${r.truncated ? '<p class="muted">Only the 300 most affected are listed.</p>' : ''}
+        ${renderImpactCheck(imp)}`;
     }
     el.innerHTML = head + body;
     el.querySelectorAll('[data-change]').forEach(b => {
@@ -2185,6 +2209,8 @@
         if (S.impact.changeType === b.dataset.change) return;
         S.impact.changeType = b.dataset.change;
         S.impact.result = null;
+        S.impact.ai = null;
+        S.impact.check = null;
         requestImpact(false);
       };
     });
@@ -2192,7 +2218,67 @@
       $('impShow').onclick = () => (impactOn() ? setHighlight(null) : applyImpactHighlight());
       syncImpactToggle();
     }
+    if ($('impDesc')) $('impDesc').oninput = () => (S.impact.description = $('impDesc').value);
+    if ($('impAI'))
+      $('impAI').onclick = () => {
+        S.impact.ai = { busy: true };
+        renderImpact();
+        vscode.postMessage({ type: 'impactAI', id: S.impact.target, changeType: S.impact.changeType, description: S.impact.description || '' });
+      };
+    if ($('impCheck'))
+      $('impCheck').onclick = () => {
+        S.impact.check = { busy: true };
+        renderImpact();
+        vscode.postMessage({ type: 'impactCheck', id: S.impact.target, changeType: S.impact.changeType });
+      };
     bindLinks(el);
+  }
+
+  const VERDICT_LABELS = { breaks: 'breaks', review: 'needs review', fine: 'likely fine' };
+
+  function renderImpactAI(imp, items) {
+    const ai = imp.ai;
+    const places = Math.min(10, items.filter(i => i.kind !== 'file').length);
+    if (!places) return '';
+    let status = `<span class="muted">The AI reads the code at the ${places} riskiest place${places === 1 ? '' : 's'}.</span>`;
+    if (ai && ai.busy) status = `<span class="muted busy">Reading ${places} place${places === 1 ? '' : 's'}…</span>`;
+    else if (ai && ai.error) status = `<span class="muted">The AI check failed: ${esc(ai.error)}</span>`;
+    else if (ai && ai.verdicts) {
+      const c = k => [...ai.verdicts.values()].filter(v => v.verdict === k).length;
+      status = `<span class="muted">Checked ${ai.asked} place${ai.asked === 1 ? '' : 's'}${ai.model ? ' via ' + esc(ai.model) : ''}: ${c('breaks')} break, ${c('review')} need review, ${c('fine')} likely fine.</span>`;
+    }
+    return `<div class="impai">
+      <textarea id="impDesc" rows="2" placeholder="Describe the change (optional), e.g. “add an int error code parameter”">${esc(imp.description || '')}</textarea>
+      <div class="askrow"><button id="impAI" class="primary"${ai && ai.busy ? ' disabled' : ''}>${ai && ai.verdicts ? 'Check again with AI' : 'Check with AI'}</button>${status}</div>
+    </div>`;
+  }
+
+  function renderImpactCheck(imp) {
+    const c = imp.check;
+    const intro = '<p class="muted">After making the change, compare this prediction, made from your last commit, with what your uncommitted edits actually changed.</p>';
+    const btn = `<button id="impCheck"${c && c.busy ? ' disabled' : ''}>${c && c.busy ? 'Comparing…' : c && c.result ? 'Check again' : 'Check against my edits'}</button>`;
+    let body = '';
+    const r = c && c.result;
+    if (r && r.error) body = `<p class="muted">${esc(r.error)}</p>`;
+    else if (r) {
+      const pct = x => (x == null ? '–' : Math.round(x * 100) + '%');
+      const what = r.compared === 'files' ? 'file' : 'place';
+      const chips = (list, extra) => (list.length ? `<ul class="rel">${list.map(x => `<li>${nodeChip(x.id)}${extra ? extra(x) : ''}</li>`).join('')}</ul>` : '');
+      const statusTag = x => (x.status ? ` <span class="pill sm st-${x.status}">${x.status}</span>` : '');
+      const target = r.targetChanged ? `It was ${r.targetChanged === 'removed' ? 'removed or its signature changed' : r.targetChanged}.` : 'It has not changed yet.';
+      if (!r.changedCount && !r.targetChanged) body = '<p class="muted">There are no uncommitted changes to compare with yet.</p>';
+      else {
+        const related = r.missed.filter(x => x.related);
+        const unrelated = r.missed.filter(x => !x.related);
+        body = `<p>${target} ${r.changedCount} other ${what}${r.changedCount === 1 ? '' : 's'} changed.</p>
+          <div class="impscore"><span title="Of the places predicted as high or medium risk, how many changed">Precision <b>${pct(r.precision)}</b></span><span title="Of the changed places connected to it, how many were predicted">Recall <b>${pct(r.recall)}</b></span></div>
+          <details open><summary>Predicted and changed <span class="muted">${r.hits.length}</span></summary>${chips(r.hits, statusTag)}</details>
+          <details${r.falseAlarms.length ? ' open' : ''}><summary>Predicted, not changed <span class="muted">${r.falseAlarms.length}</span></summary>${chips(r.falseAlarms, x => ` <span class="muted">${x.tier}</span>`)}</details>
+          <details${related.length ? ' open' : ''}><summary>Changed, not predicted <span class="muted">${related.length}</span></summary>${chips(related, statusTag)}</details>
+          ${unrelated.length ? `<details><summary>Other changes, probably unrelated <span class="muted">${unrelated.length}</span></summary>${chips(unrelated, statusTag)}</details>` : ''}`;
+      }
+    }
+    return `<details class="impcheck" open><summary>Check against my edits</summary>${intro}<div class="askrow">${btn}</div>${body}</details>`;
   }
 
   function aggregatedDeps(id) {
@@ -2967,6 +3053,16 @@
       case 'impactResult':
         onImpact(m);
         break;
+      case 'impactAIResult':
+      case 'impactCheckResult': {
+        const imp = S.impact;
+        if (!imp || m.id !== imp.target || m.requested !== imp.changeType || m.cancelled) break;
+        if (m.type === 'impactAIResult') imp.ai = m.error ? { error: m.error } : { verdicts: new Map(m.verdicts.map(v => [v.id, v])), asked: m.asked, model: m.model };
+        else imp.check = { result: m };
+        if (S.tab === 'impact') renderImpact();
+        if (m.type === 'impactAIResult' && impactOn()) render();
+        break;
+      }
       case 'aiHistory':
         S.history = m.entries || [];
         renderHistory();
