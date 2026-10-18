@@ -1209,7 +1209,7 @@ function renderLegend() {
         swatch('type', 'struct'),
         swatch('enum', 'enum'),
         swatch('typedef', 'typedef'),
-        ...((state.data?.nodes ?? []).some((n) => n.kind === 'class') ? [swatch('type cls', 'class'), swatch('fn', 'method')] : []),
+        ...((state.data?.nodes ?? []).some((n) => n.kind === 'class') ? [swatch('type cls', 'class')] : []),
         ...(state.mode === 'diff' ? [swatch('added', 'added'), swatch('modified', 'changed'), swatch('removed', 'removed')] : []),
     ].join('');
     const legend = $('legend');
