@@ -152,10 +152,9 @@ export function renderDetails() {
       <h3>Explore the code</h3>
       <ul>
         <li><b>Click</b> a node to see what it is and how it connects.</li>
-        <li><b>Double-click</b> (or press <kbd>+</kbd>) to look inside a folder, file or class.</li>
-        <li><b>Ctrl+click</b> to jump to its source.</li>
-        <li>Arrows show <b>calls</b>, <b>includes</b>, <b>inheritance</b> and more — choose them under <b>Show ▾</b>.</li>
-        <li>Scroll to zoom, drag the background to pan, <kbd>/</kbd> to search.</li>
+        <li>Clicking a file or class also opens it; clicking a function shows its code.</li>
+        <li><b>Double-click</b> to jump to its source.</li>
+        <li>Scroll to zoom, drag the background to pan.</li>
       </ul>
       ${entryPoints()}
       ${semanticIntro()}
